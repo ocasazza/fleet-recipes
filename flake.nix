@@ -124,9 +124,10 @@
               cp -r ChmodTool $out/
               cp -r ScriptInjector $out/
               cp -r ProductBuildCreator $out/
+              cp -r FleetAgentBuilder $out/
               # Copy recipe directories (exclude hidden files, tests, etc)
               for dir in */; do
-                if [[ ! "$dir" =~ ^(\..*|tests|\.github|nix-darwin|FleetImporter|ChmodTool|ScriptInjector|ProductBuildCreator)/ ]]; then
+                if [[ ! "$dir" =~ ^(\..*|tests|\.github|nix-darwin|FleetImporter|ChmodTool|ScriptInjector|ProductBuildCreator|FleetAgentBuilder)/ ]]; then
                   cp -r "$dir" $out/
                 fi
               done
