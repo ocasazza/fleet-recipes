@@ -1011,7 +1011,7 @@ class FleetImporter(Processor):
         gitops_team_yaml_path = self.env.get("gitops_team_yaml_path")
         github_token = self.env.get("github_token")
         s3_retention_versions = int(self.env.get("s3_retention_versions", 0))
-        dry_run = bool(self.env.get("dry_run", False))
+        dry_run = self._parse_bool(self.env.get("dry_run", False))
 
         # Detect GitOps mode type: local-only or full GitHub PR workflow
         local_gitops_mode = not bool(gitops_repo_url)
