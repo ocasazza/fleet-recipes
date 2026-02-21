@@ -26,7 +26,7 @@
       );
     in
     {
-      # Output the FleetImporter processor directory
+      # Output the FleetImporter processor directory and full recipes
       packages = forAllSystems (
         system:
         let
@@ -52,7 +52,35 @@
             };
           };
 
-          default = self.packages.${system}.fleetimporter;
+          # Full recipes directory for RECIPE_SEARCH_DIRS
+          recipes = pkgs.stdenv.mkDerivation {
+            pname = "autopkg-fleet-recipes";
+            version = "1.0.0";
+
+            src = ./.;
+
+            installPhase = ''
+              mkdir -p $out
+              # Copy all processors and recipes
+              cp -r FleetImporter $out/
+              cp -r ChmodTool $out/
+              # Copy recipe directories (exclude hidden files, tests, etc)
+              for dir in */; do
+                if [[ ! "$dir" =~ ^(\..*|tests|\.github)/ ]]; then
+                  cp -r "$dir" $out/
+                fi
+              done
+            '';
+
+            meta = with pkgs.lib; {
+              description = "AutoPkg recipes and processors for Fleet";
+              homepage = "https://github.com/ocasazza/fleet-recipes";
+              license = licenses.asl20;
+              platforms = platforms.unix;
+            };
+          };
+
+          default = self.packages.${system}.recipes;
         }
       );
 
