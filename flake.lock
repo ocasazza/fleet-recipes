@@ -1,5 +1,21 @@
 {
   "nodes": {
+    "autopkg": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1770149940,
+        "narHash": "sha256-Y5M53idCmVi4uPOaysdl/ZnS3JUdc5mUi5FTmkAuHBE=",
+        "owner": "autopkg",
+        "repo": "autopkg",
+        "rev": "4ac5cfb828117ecda41a19a20b294eab7189e47b",
+        "type": "github"
+      },
+      "original": {
+        "owner": "autopkg",
+        "repo": "autopkg",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1771207753,
@@ -18,6 +34,7 @@
     },
     "root": {
       "inputs": {
+        "autopkg": "autopkg",
         "nixpkgs": "nixpkgs"
       }
     }

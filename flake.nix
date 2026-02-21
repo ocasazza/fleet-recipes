@@ -35,6 +35,60 @@
         system:
         let
           pkgs = nixpkgsFor.${system};
+          lib = pkgs.lib;
+
+          # Build AutoPkg with Python dependencies
+          autopkgDrv =
+            let
+              python = pkgs.python311;
+              pythonPackages = python.pkgs;
+              pythonDeps = with pythonPackages; [
+                appdirs
+                attrs
+                boto3
+                certifi
+                lxml
+                pyyaml
+                six
+                xattr
+              ] ++ lib.optionals pkgs.stdenv.isDarwin [
+                pyobjc-core
+                pyobjc-framework-Cocoa
+                pyobjc-framework-Quartz
+              ];
+            in
+            pythonPackages.buildPythonApplication {
+              pname = "autopkg";
+              version = "3.0.0";
+              src = autopkg;
+              format = "other";
+
+              propagatedBuildInputs = pythonDeps;
+              dontBuild = true;
+              doCheck = false;
+
+              postPatch = ''
+                sed -i '/^import sys$/a import grp' Code/autopkgserver/autopkgserver
+                sed -i 's/admin_gid = 80$/&\n    try:\n        nixbld_gid = grp.getgrnam("nixbld").gr_gid\n    except KeyError:\n        nixbld_gid = None/' Code/autopkgserver/autopkgserver
+                sed -i 's/if info.st_gid not in (wheel_gid, admin_gid):/if info.st_gid not in (wheel_gid, admin_gid, nixbld_gid):/' Code/autopkgserver/autopkgserver
+              '';
+
+              installPhase = ''
+                mkdir -p $out/libexec $out/bin
+                if [ -d "Code" ]; then
+                  cp -R Code $out/libexec/autopkg
+                else
+                  cp -R . $out/libexec/autopkg
+                fi
+
+                makeWrapper ${python}/bin/python${python.pythonVersion} $out/bin/autopkg \
+                  --add-flags "$out/libexec/autopkg/autopkg" \
+                  --prefix PYTHONPATH : "$out/libexec/autopkg" \
+                  --prefix PYTHONPATH : "${pythonPackages.makePythonPath pythonDeps}"
+              '';
+
+              nativeBuildInputs = [ pkgs.makeWrapper ];
+            };
         in
         {
           fleetimporter = pkgs.stdenv.mkDerivation {
@@ -99,61 +153,8 @@
         system:
         let
           pkgs = nixpkgsFor.${system};
-          lib = pkgs.lib;
           recipes = self.packages.${system}.recipes;
-
-          # Build AutoPkg (same as in apps section)
-          autopkgDrv =
-            let
-              python = pkgs.python311;
-              pythonPackages = python.pkgs;
-              pythonDeps = with pythonPackages; [
-                appdirs
-                attrs
-                boto3
-                certifi
-                lxml
-                pyyaml
-                six
-                xattr
-              ] ++ lib.optionals pkgs.stdenv.isDarwin [
-                pyobjc-core
-                pyobjc-framework-Cocoa
-                pyobjc-framework-Quartz
-              ];
-            in
-            pythonPackages.buildPythonApplication {
-              pname = "autopkg";
-              version = "3.0.0";
-              src = autopkg;
-              format = "other";
-
-              propagatedBuildInputs = pythonDeps;
-              dontBuild = true;
-              doCheck = false;
-
-              postPatch = ''
-                sed -i '/^import sys$/a import grp' Code/autopkgserver/autopkgserver
-                sed -i 's/admin_gid = 80$/&\n    try:\n        nixbld_gid = grp.getgrnam("nixbld").gr_gid\n    except KeyError:\n        nixbld_gid = None/' Code/autopkgserver/autopkgserver
-                sed -i 's/if info.st_gid not in (wheel_gid, admin_gid):/if info.st_gid not in (wheel_gid, admin_gid, nixbld_gid):/' Code/autopkgserver/autopkgserver
-              '';
-
-              installPhase = ''
-                mkdir -p $out/libexec $out/bin
-                if [ -d "Code" ]; then
-                  cp -R Code $out/libexec/autopkg
-                else
-                  cp -R . $out/libexec/autopkg
-                fi
-
-                makeWrapper ${python}/bin/python${python.pythonVersion} $out/bin/autopkg \
-                  --add-flags "$out/libexec/autopkg/autopkg" \
-                  --prefix PYTHONPATH : "$out/libexec/autopkg" \
-                  --prefix PYTHONPATH : "${pythonPackages.makePythonPath pythonDeps}"
-              '';
-
-              nativeBuildInputs = [ pkgs.makeWrapper ];
-            };
+          autopkgDrv = self.packages.${system}.autopkg;
         in
         {
           default = pkgs.mkShell {
@@ -187,61 +188,8 @@
         system:
         let
           pkgs = nixpkgsFor.${system};
-          lib = pkgs.lib;
           recipes = self.packages.${system}.recipes;
-
-          # Build AutoPkg with Python dependencies
-          autopkgDrv =
-            let
-              python = pkgs.python311;
-              pythonPackages = python.pkgs;
-              pythonDeps = with pythonPackages; [
-                appdirs
-                attrs
-                boto3
-                certifi
-                lxml
-                pyyaml
-                six
-                xattr
-              ] ++ lib.optionals pkgs.stdenv.isDarwin [
-                pyobjc-core
-                pyobjc-framework-Cocoa
-                pyobjc-framework-Quartz
-              ];
-            in
-            pythonPackages.buildPythonApplication {
-              pname = "autopkg";
-              version = "3.0.0";
-              src = autopkg;
-              format = "other";
-
-              propagatedBuildInputs = pythonDeps;
-              dontBuild = true;
-              doCheck = false;
-
-              postPatch = ''
-                sed -i '/^import sys$/a import grp' Code/autopkgserver/autopkgserver
-                sed -i 's/admin_gid = 80$/&\n    try:\n        nixbld_gid = grp.getgrnam("nixbld").gr_gid\n    except KeyError:\n        nixbld_gid = None/' Code/autopkgserver/autopkgserver
-                sed -i 's/if info.st_gid not in (wheel_gid, admin_gid):/if info.st_gid not in (wheel_gid, admin_gid, nixbld_gid):/' Code/autopkgserver/autopkgserver
-              '';
-
-              installPhase = ''
-                mkdir -p $out/libexec $out/bin
-                if [ -d "Code" ]; then
-                  cp -R Code $out/libexec/autopkg
-                else
-                  cp -R . $out/libexec/autopkg
-                fi
-
-                makeWrapper ${python}/bin/python${python.pythonVersion} $out/bin/autopkg \
-                  --add-flags "$out/libexec/autopkg/autopkg" \
-                  --prefix PYTHONPATH : "$out/libexec/autopkg" \
-                  --prefix PYTHONPATH : "${pythonPackages.makePythonPath pythonDeps}"
-              '';
-
-              nativeBuildInputs = [ pkgs.makeWrapper ];
-            };
+          autopkgDrv = self.packages.${system}.autopkg;
         in
         {
           autopkg-run = {
