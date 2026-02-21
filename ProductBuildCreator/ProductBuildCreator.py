@@ -75,6 +75,12 @@ class ProductBuildCreator(Processor):
         output_pkg = self.env["output_pkg"]
         signing_identity = self.env.get("signing_identity", "")
 
+        # Skip signing if identity is empty or unsubstituted variable
+        # AutoPkg leaves variables as %var% if the env var is empty
+        if signing_identity and signing_identity.startswith("%"):
+            self.output(f"Signing identity is unsubstituted variable ({signing_identity}), skipping signing")
+            signing_identity = ""
+
         # Validate inputs
         if not os.path.exists(distribution_xml):
             raise ProcessorError(f"Distribution XML not found: {distribution_xml}")
