@@ -9,6 +9,7 @@ Copyright 2024 Schrödinger, Inc.
 """
 
 import os
+import shutil
 import subprocess
 from autopkglib import Processor, ProcessorError
 
@@ -63,18 +64,33 @@ class FleetAgentBuilder(Processor):
         self.output(f"Building Fleet agent package for team: {team_name}")
         self.output(f"Fleet URL: {fleet_url}")
 
-        # Build the fleetctl package command
-        cmd = [
-            fleetctl_path,
-            "package",
-            "--type=pkg",
-            f"--fleet-url={fleet_url}",
-            f"--enroll-secret={enroll_secret}",
-            f"--fleet-desktop",
-            "--disable-open-folder",
-        ]
+        # Check if fleetctl is in PATH, otherwise use npx
+        if shutil.which(fleetctl_path) is None:
+            # fleetctl not found, use npx to run it
+            cmd = [
+                "npx",
+                "-y",
+                "fleetctl",
+                "package",
+                "--type=pkg",
+                f"--fleet-url={fleet_url}",
+                f"--enroll-secret={enroll_secret}",
+                f"--fleet-desktop",
+                "--disable-open-folder",
+            ]
+        else:
+            # Build the fleetctl package command
+            cmd = [
+                fleetctl_path,
+                "package",
+                "--type=pkg",
+                f"--fleet-url={fleet_url}",
+                f"--enroll-secret={enroll_secret}",
+                f"--fleet-desktop",
+                "--disable-open-folder",
+            ]
 
-        self.output(f"Running: {' '.join(cmd[:3])} --fleet-url=... --enroll-secret=***")
+        self.output(f"Running: {cmd[0]} {cmd[1] if cmd[0] == 'npx' else 'package'} --fleet-url=... --enroll-secret=***")
 
         try:
             # Run fleetctl package command
@@ -106,7 +122,9 @@ class FleetAgentBuilder(Processor):
             pkg_size = os.path.getsize(output_path)
             pkg_size_mb = pkg_size / (1024 * 1024)
 
-            self.output(f"✓ Fleet agent package built: {output_path} ({pkg_size_mb:.2f} MB)")
+            self.output(
+                f"✓ Fleet agent package built: {output_path} ({pkg_size_mb:.2f} MB)"
+            )
 
             # Set output variable
             self.env["fleet_agent_pkg"] = output_path
@@ -118,11 +136,16 @@ class FleetAgentBuilder(Processor):
             if e.stdout:
                 error_msg += f"\nStandard output:\n{e.stdout}"
             raise ProcessorError(error_msg)
-        except FileNotFoundError:
-            raise ProcessorError(
-                f"fleetctl command not found at: {fleetctl_path}. "
-                "Ensure fleetctl is installed and in PATH."
-            )
+        except FileNotFoundError as e:
+            if cmd[0] == "npx":
+                raise ProcessorError(
+                    "npx command not found. Ensure Node.js/npm is installed."
+                )
+            else:
+                raise ProcessorError(
+                    f"fleetctl command not found at: {fleetctl_path}. "
+                    "Ensure fleetctl is installed and in PATH or install Node.js for npx."
+                )
 
 
 if __name__ == "__main__":
