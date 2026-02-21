@@ -590,12 +590,20 @@ class FleetImporter(Processor):
         # Platform parameter accepted for future use but not currently utilized
         _ = self.env.get("platform", DEFAULT_PLATFORM)  # noqa: F841
 
-        # Validate required direct mode parameters
+        # Check for dry_run mode
+        dry_run = bool(self.env.get("dry_run", False))
+
+        # Get local GitOps parameters for YAML updates (optional)
+        gitops_software_dir = self.env.get("gitops_software_dir")
+        gitops_software_subpath = self.env.get("gitops_software_subpath")
+        gitops_software_filename = self.env.get("gitops_software_filename")
+
+        # Validate required direct mode parameters (skip in dry_run)
         fleet_api_base = self.env.get("fleet_api_base")
         fleet_token = self.env.get("fleet_api_token")
         team_id = self.env.get("team_id")
 
-        if not all([fleet_api_base, fleet_token, team_id]):
+        if not dry_run and not all([fleet_api_base, fleet_token, team_id]):
             raise ProcessorError(
                 "Direct mode requires: fleet_api_base, fleet_api_token, and team_id. "
                 "These can be set via recipe Input variables or AutoPkg preferences:\n"
@@ -603,6 +611,28 @@ class FleetImporter(Processor):
                 "  defaults write com.github.autopkg FLEET_API_TOKEN 'your-token'\n"
                 "  defaults write com.github.autopkg FLEET_TEAM_ID '1'"
             )
+
+        # Dry run mode: calculate hash and exit early
+        if dry_run:
+            self.output("DRY RUN MODE: Package will be built and hashed, but Fleet API upload and YAML updates will be skipped.")
+
+            # Calculate hash from local package
+            hash_sha256 = self._calculate_file_sha256(pkg_path)
+            self.output(f"Calculated SHA-256 hash from local file: {hash_sha256}")
+            self.env["hash_sha256"] = hash_sha256
+
+            # Output what would be done
+            self.output(f"[DRY RUN] Would upload package to Fleet API:")
+            self.output(f"  Software: {software_title}")
+            self.output(f"  Version: {version}")
+            self.output(f"  Hash: {hash_sha256}")
+
+            if gitops_software_dir and gitops_software_subpath and gitops_software_filename:
+                yaml_file_path = Path(gitops_software_dir) / gitops_software_subpath / gitops_software_filename
+                self.output(f"[DRY RUN] Would update local software YAML: {yaml_file_path}")
+
+            self.output("DRY RUN COMPLETE - No changes were made to Fleet API or local files")
+            return
 
         # Now safe to use - strip/convert values
         fleet_api_base = fleet_api_base.rstrip("/")
@@ -752,6 +782,10 @@ class FleetImporter(Processor):
                         f"Warning: Failed to create auto-update policy: {e}. "
                         "Package already exists, but policy creation failed."
                     )
+
+            # Note: We don't update the local YAML when package already exists
+            # because we assume the YAML is already up to date. If the hash differs,
+            # delete the package from Fleet and re-run to force a fresh upload.
             return
 
         # Upload to Fleet
@@ -801,6 +835,27 @@ class FleetImporter(Processor):
         self.env["fleet_installer_id"] = installer_id
         if hash_sha256:
             self.env["hash_sha256"] = hash_sha256
+
+        # Update local software YAML file if GitOps parameters are provided
+        if gitops_software_dir and gitops_software_subpath and gitops_software_filename and hash_sha256:
+            yaml_file_path = Path(gitops_software_dir) / gitops_software_subpath / gitops_software_filename
+
+            # Construct Fleet package URL from fleet_api_base
+            # Fleet package URL format: https://fleet.example.com/api/latest/fleet/software/versions/{installer_id}/package
+            package_url = f"{fleet_api_base}/api/latest/fleet/software/versions/{installer_id}/package"
+
+            if not yaml_file_path.is_absolute():
+                yaml_file_path = yaml_file_path.resolve()
+
+            self.output(f"Updating local software YAML: {yaml_file_path}")
+
+            # Update or create the YAML file with Fleet package URL and hash from Fleet
+            self._update_local_software_yaml(
+                yaml_file_path,
+                package_url,
+                hash_sha256,
+                version,
+            )
 
         # Upload icon if provided
         icon_path_str = self.env.get("icon", "").strip()
