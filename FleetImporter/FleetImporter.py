@@ -572,18 +572,25 @@ class FleetImporter(Processor):
     def _parse_bool(self, value):
         """Parse boolean from string or bool value.
 
-        AutoPkg passes booleans as strings via --key, so we need to handle:
-        - "true", "True", "TRUE", "1" -> True
-        - "false", "False", "FALSE", "0", "" -> False
-        - True, False -> passthrough
-        - None -> False
+        Uses the standard distutils.util.strtobool implementation to handle:
+        - True values: 'y', 'yes', 't', 'true', 'on', '1'
+        - False values: 'n', 'no', 'f', 'false', 'off', '0'
+        - Bool/int values: passthrough
+
+        AutoPkg passes booleans as strings via --key, so "false" becomes string
+        and bool("false") = True (non-empty string). This properly parses it.
         """
         if isinstance(value, bool):
             return value
-        if isinstance(value, str):
-            return value.lower() in ("true", "1", "yes")
         if isinstance(value, int):
             return bool(value)
+        if isinstance(value, str):
+            # Standard strtobool implementation (distutils deprecated in 3.12)
+            val = value.lower()
+            if val in ('y', 'yes', 't', 'true', 'on', '1'):
+                return True
+            elif val in ('n', 'no', 'f', 'false', 'off', '0', ''):
+                return False
         return bool(value)
 
     def main(self):
