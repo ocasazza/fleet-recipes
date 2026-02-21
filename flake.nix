@@ -84,9 +84,15 @@
             };
           };
 
+          # AutoPkg package (for use in nix-darwin modules)
+          autopkg = autopkgDrv;
+
           default = self.packages.${system}.recipes;
         }
       );
+
+      # nix-darwin module for autopkgserver
+      darwinModules.autopkgserver = ./nix-darwin/autopkgserver.nix;
 
       # Development shell for working on FleetImporter and testing recipes
       devShells = forAllSystems (
