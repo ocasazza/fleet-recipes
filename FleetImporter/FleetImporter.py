@@ -602,7 +602,7 @@ class FleetImporter(Processor):
 
     def main(self):
         # Check if GitOps mode is enabled
-        gitops_mode = self._parse_bool(self.env.get("gitops_mode", False))
+        gitops_mode = self._parse_self._parse_bool(self.env.get("gitops_mode", False))
 
         if gitops_mode:
             self._run_gitops_workflow()
@@ -622,7 +622,7 @@ class FleetImporter(Processor):
         _ = self.env.get("platform", DEFAULT_PLATFORM)  # noqa: F841
 
         # Check for dry_run mode
-        dry_run = self._parse_bool(self.env.get("dry_run", False))
+        dry_run = self._parse_self._parse_bool(self.env.get("dry_run", False))
 
         # Get local GitOps parameters for YAML updates (optional)
         gitops_software_dir = self.env.get("gitops_software_dir")
@@ -670,8 +670,8 @@ class FleetImporter(Processor):
         team_id = int(team_id)
 
         # Fleet deployment options
-        self_service = bool(self.env.get("self_service", False))
-        automatic_install = bool(self.env.get("automatic_install", False))
+        self_service = self._parse_bool(self.env.get("self_service", False))
+        automatic_install = self._parse_bool(self.env.get("automatic_install", False))
         labels_include_any = list(self.env.get("labels_include_any", []))
         labels_exclude_any = list(self.env.get("labels_exclude_any", []))
         categories = list(self.env.get("categories", []))
@@ -794,7 +794,7 @@ class FleetImporter(Processor):
                     )
 
             # Still create/update auto-update policy if enabled
-            automatic_update = bool(self.env.get("automatic_update", False))
+            automatic_update = self._parse_bool(self.env.get("automatic_update", False))
             if automatic_update and title_id:
                 self.output("Auto-update policy enabled - creating/updating policy...")
                 try:
@@ -968,7 +968,7 @@ class FleetImporter(Processor):
                 )
 
         # Create auto-update policy if enabled
-        automatic_update = bool(self.env.get("automatic_update", False))
+        automatic_update = self._parse_bool(self.env.get("automatic_update", False))
         if automatic_update and title_id:
             self.output("Auto-update policy enabled - creating/updating policy...")
             try:
@@ -1025,7 +1025,7 @@ class FleetImporter(Processor):
         gitops_team_yaml_path = self.env.get("gitops_team_yaml_path")
         github_token = self.env.get("github_token")
         s3_retention_versions = int(self.env.get("s3_retention_versions", 0))
-        dry_run = self._parse_bool(self.env.get("dry_run", False))
+        dry_run = self._parse_self._parse_bool(self.env.get("dry_run", False))
 
         # Detect GitOps mode type: local-only or full GitHub PR workflow
         local_gitops_mode = not bool(gitops_repo_url)
@@ -1068,8 +1068,8 @@ class FleetImporter(Processor):
         self.env["_local_gitops_mode"] = local_gitops_mode
 
         # Fleet deployment options
-        self_service = bool(self.env.get("self_service", True))
-        automatic_install = bool(self.env.get("automatic_install", False))
+        self_service = self._parse_bool(self.env.get("self_service", True))
+        automatic_install = self._parse_bool(self.env.get("automatic_install", False))
         labels_include_any = list(self.env.get("labels_include_any", []))
         labels_exclude_any = list(self.env.get("labels_exclude_any", []))
         categories = list(self.env.get("categories", []))
@@ -1264,7 +1264,7 @@ class FleetImporter(Processor):
                 if categories:
                     self.output(f"  Categories: {categories}")
 
-                automatic_update = bool(self.env.get("automatic_update", False))
+                automatic_update = self._parse_bool(self.env.get("automatic_update", False))
                 if automatic_update:
                     self.output("[DRY RUN] Would create auto-update policy YAML")
 
@@ -1337,7 +1337,7 @@ class FleetImporter(Processor):
 
                 # Create auto-update policy if enabled
                 policy_yaml_path = None
-                automatic_update = bool(self.env.get("automatic_update", False))
+                automatic_update = self._parse_bool(self.env.get("automatic_update", False))
                 if automatic_update:
                     self.output("Auto-update policy enabled - creating policy YAML...")
                     try:
