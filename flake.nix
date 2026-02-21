@@ -3,10 +3,14 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    autopkg = {
+      url = "github:autopkg/autopkg";
+      flake = false;
+    };
   };
 
   outputs =
-    { self, nixpkgs }:
+    { self, nixpkgs, autopkg }:
     let
       supportedSystems = [
         "x86_64-linux"
@@ -84,31 +88,171 @@
         }
       );
 
-      # Development shell for working on FleetImporter
+      # Development shell for working on FleetImporter and testing recipes
       devShells = forAllSystems (
         system:
         let
           pkgs = nixpkgsFor.${system};
+          lib = pkgs.lib;
+          recipes = self.packages.${system}.recipes;
+
+          # Build AutoPkg (same as in apps section)
+          autopkgDrv =
+            let
+              python = pkgs.python311;
+              pythonPackages = python.pkgs;
+              pythonDeps = with pythonPackages; [
+                appdirs
+                attrs
+                boto3
+                certifi
+                lxml
+                pyyaml
+                six
+                xattr
+              ] ++ lib.optionals pkgs.stdenv.isDarwin [
+                pyobjc-core
+                pyobjc-framework-Cocoa
+                pyobjc-framework-Quartz
+              ];
+            in
+            pythonPackages.buildPythonApplication {
+              pname = "autopkg";
+              version = "3.0.0";
+              src = autopkg;
+              format = "other";
+
+              propagatedBuildInputs = pythonDeps;
+              dontBuild = true;
+              doCheck = false;
+
+              postPatch = ''
+                sed -i '/^import sys$/a import grp' Code/autopkgserver/autopkgserver
+                sed -i 's/admin_gid = 80$/&\n    try:\n        nixbld_gid = grp.getgrnam("nixbld").gr_gid\n    except KeyError:\n        nixbld_gid = None/' Code/autopkgserver/autopkgserver
+                sed -i 's/if info.st_gid not in (wheel_gid, admin_gid):/if info.st_gid not in (wheel_gid, admin_gid, nixbld_gid):/' Code/autopkgserver/autopkgserver
+              '';
+
+              installPhase = ''
+                mkdir -p $out/libexec $out/bin
+                if [ -d "Code" ]; then
+                  cp -R Code $out/libexec/autopkg
+                else
+                  cp -R . $out/libexec/autopkg
+                fi
+
+                makeWrapper ${python}/bin/python${python.pythonVersion} $out/bin/autopkg \
+                  --add-flags "$out/libexec/autopkg/autopkg" \
+                  --prefix PYTHONPATH : "$out/libexec/autopkg" \
+                  --prefix PYTHONPATH : "${pythonPackages.makePythonPath pythonDeps}"
+              '';
+
+              nativeBuildInputs = [ pkgs.makeWrapper ];
+            };
         in
         {
           default = pkgs.mkShell {
-            buildInputs = with pkgs; [
-              python311
-              python311Packages.boto3
-              python311Packages.pyyaml
-              python311Packages.requests
+            buildInputs = [
+              autopkgDrv
+              pkgs.git
+              pkgs.curl
+              pkgs.jq
+              pkgs.yq-go
             ];
 
             shellHook = ''
-              echo "FleetImporter development environment"
+              echo "AutoPkg fleet-recipes development environment"
               echo ""
-              echo "Python version: $(python3 --version)"
-              echo "FleetImporter location: ${self}/FleetImporter"
+              echo "AutoPkg version: $(autopkg version)"
+              echo "FleetImporter location: ${recipes}/FleetImporter"
               echo ""
-              echo "To test FleetImporter locally:"
-              echo "  cd path/to/recipe/dir"
-              echo "  autopkg run recipe.yaml"
+              echo "RECIPE_SEARCH_DIRS=${recipes}"
+              export RECIPE_SEARCH_DIRS="${recipes}"
+              export AUTOPKG_CACHE_DIR="$HOME/Library/AutoPkg/Cache"
+              echo ""
+              echo "To test recipes:"
+              echo "  autopkg run <recipe>.fleet.recipe.yaml"
             '';
+          };
+        }
+      );
+
+      # AutoPkg app with fleet-recipes processors pre-configured
+      apps = forAllSystems (
+        system:
+        let
+          pkgs = nixpkgsFor.${system};
+          lib = pkgs.lib;
+          recipes = self.packages.${system}.recipes;
+
+          # Build AutoPkg with Python dependencies
+          autopkgDrv =
+            let
+              python = pkgs.python311;
+              pythonPackages = python.pkgs;
+              pythonDeps = with pythonPackages; [
+                appdirs
+                attrs
+                boto3
+                certifi
+                lxml
+                pyyaml
+                six
+                xattr
+              ] ++ lib.optionals pkgs.stdenv.isDarwin [
+                pyobjc-core
+                pyobjc-framework-Cocoa
+                pyobjc-framework-Quartz
+              ];
+            in
+            pythonPackages.buildPythonApplication {
+              pname = "autopkg";
+              version = "3.0.0";
+              src = autopkg;
+              format = "other";
+
+              propagatedBuildInputs = pythonDeps;
+              dontBuild = true;
+              doCheck = false;
+
+              postPatch = ''
+                sed -i '/^import sys$/a import grp' Code/autopkgserver/autopkgserver
+                sed -i 's/admin_gid = 80$/&\n    try:\n        nixbld_gid = grp.getgrnam("nixbld").gr_gid\n    except KeyError:\n        nixbld_gid = None/' Code/autopkgserver/autopkgserver
+                sed -i 's/if info.st_gid not in (wheel_gid, admin_gid):/if info.st_gid not in (wheel_gid, admin_gid, nixbld_gid):/' Code/autopkgserver/autopkgserver
+              '';
+
+              installPhase = ''
+                mkdir -p $out/libexec $out/bin
+                if [ -d "Code" ]; then
+                  cp -R Code $out/libexec/autopkg
+                else
+                  cp -R . $out/libexec/autopkg
+                fi
+
+                makeWrapper ${python}/bin/python${python.pythonVersion} $out/bin/autopkg \
+                  --add-flags "$out/libexec/autopkg/autopkg" \
+                  --prefix PYTHONPATH : "$out/libexec/autopkg" \
+                  --prefix PYTHONPATH : "${pythonPackages.makePythonPath pythonDeps}"
+              '';
+
+              nativeBuildInputs = [ pkgs.makeWrapper ];
+            };
+        in
+        {
+          autopkg-run = {
+            type = "app";
+            meta.description = "Run AutoPkg with fleet-recipes processors";
+            program = toString (
+              pkgs.writeShellScript "autopkg-run" ''
+                set -euo pipefail
+                export PATH="${pkgs.lib.makeBinPath [ autopkgDrv pkgs.git pkgs.curl pkgs.python3 ]}:$PATH"
+
+                # Set up AutoPkg environment with fleet-recipes in search path
+                export AUTOPKG_CACHE_DIR="''${AUTOPKG_CACHE_DIR:-$HOME/Library/AutoPkg/Cache}"
+                export RECIPE_SEARCH_DIRS="''${RECIPE_SEARCH_DIRS:-${recipes}}"
+
+                exec autopkg "$@"
+              ''
+            );
           };
         }
       );
