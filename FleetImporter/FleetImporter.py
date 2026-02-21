@@ -1104,9 +1104,10 @@ class FleetImporter(Processor):
                 # Only construct CloudFront URL if domain is provided
                 if aws_cloudfront_domain:
                     cloudfront_url = self._construct_cloudfront_url(aws_cloudfront_domain, s3_key)
-                elif s3_endpoint_url:
+                elif self.env.get("s3_endpoint_url"):
                     # Use S3 endpoint URL if available (for SeaweedFS/MinIO)
-                    cloudfront_url = f"{s3_endpoint_url}/{aws_s3_bucket}/{s3_key}"
+                    s3_endpoint = self.env.get("s3_endpoint_url")
+                    cloudfront_url = f"{s3_endpoint}/{aws_s3_bucket}/{s3_key}"
                 else:
                     cloudfront_url = "N/A"
 
