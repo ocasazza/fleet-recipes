@@ -202,11 +202,16 @@
                 set -euo pipefail
                 export PATH="${pkgs.lib.makeBinPath [ autopkgDrv pkgs.git pkgs.curl pkgs.python3 ]}:$PATH"
 
-                # Set up AutoPkg environment with fleet-recipes in search path
+                # Set up AutoPkg environment
                 export AUTOPKG_CACHE_DIR="''${AUTOPKG_CACHE_DIR:-$HOME/Library/AutoPkg/Cache}"
-                export RECIPE_SEARCH_DIRS="''${RECIPE_SEARCH_DIRS:-${recipes}}"
 
-                exec autopkg "$@"
+                # Add fleet-recipes to search path via --search-dir
+                # This adds to AutoPkg's configured repos instead of replacing them
+                if [[ "$1" == "run" ]]; then
+                  exec autopkg "$@" --search-dir="${recipes}"
+                else
+                  exec autopkg "$@"
+                fi
               ''
             );
           };
