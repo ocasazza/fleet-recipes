@@ -144,6 +144,15 @@ class FleetImporter(Processor):
             "default": "us-east-1",
             "description": "AWS region for S3 operations (default: us-east-1).",
         },
+        "s3_endpoint_url": {
+            "required": False,
+            "description": "Custom S3 endpoint URL for S3-compatible storage (e.g., SeaweedFS). Leave empty for AWS S3.",
+        },
+        "dry_run": {
+            "required": False,
+            "default": False,
+            "description": "If True, build package and calculate hash but skip S3 upload and YAML updates (for testing).",
+        },
         # --- Fleet deployment options ---
         "self_service": {
             "required": False,
@@ -930,21 +939,47 @@ class FleetImporter(Processor):
         gitops_team_yaml_path = self.env.get("gitops_team_yaml_path")
         github_token = self.env.get("github_token")
         s3_retention_versions = int(self.env.get("s3_retention_versions", 0))
+        dry_run = bool(self.env.get("dry_run", False))
 
-        # Validate required GitOps parameters
-        if not all(
-            [
-                aws_s3_bucket,
-                aws_cloudfront_domain,
-                gitops_repo_url,
-                gitops_team_yaml_path,
-                github_token,
-            ]
-        ):
-            raise ProcessorError(
-                "GitOps mode requires: aws_s3_bucket, aws_cloudfront_domain, "
-                "gitops_repo_url, gitops_team_yaml_path, and github_token"
-            )
+        # Detect GitOps mode type: local-only or full GitHub PR workflow
+        local_gitops_mode = not bool(gitops_repo_url)
+
+        # Validate required GitOps parameters based on mode
+        if dry_run:
+            # Dry run only requires S3 config
+            if not all([aws_s3_bucket]):
+                raise ProcessorError("Dry run mode requires: aws_s3_bucket")
+        elif local_gitops_mode:
+            # Local GitOps mode: upload to S3 and update local YAML files
+            gitops_software_subpath = self.env.get("gitops_software_subpath")
+            gitops_software_filename = self.env.get("gitops_software_filename")
+
+            if not all([aws_s3_bucket, gitops_software_dir, gitops_software_subpath, gitops_software_filename]):
+                raise ProcessorError(
+                    "Local GitOps mode requires: aws_s3_bucket, gitops_software_dir, "
+                    "gitops_software_subpath, and gitops_software_filename"
+                )
+            self.output("Using LOCAL GitOps mode (S3 upload + local YAML update)")
+        else:
+            # Full GitHub PR GitOps mode requires all parameters
+            if not all(
+                [
+                    aws_s3_bucket,
+                    aws_cloudfront_domain,
+                    gitops_repo_url,
+                    gitops_team_yaml_path,
+                    github_token,
+                ]
+            ):
+                raise ProcessorError(
+                    "Full GitOps mode requires: aws_s3_bucket, aws_cloudfront_domain, "
+                    "gitops_repo_url, gitops_team_yaml_path, and github_token. "
+                    "For local-only mode (no GitHub PRs), omit gitops_repo_url."
+                )
+            self.output("Using FULL GitOps mode (S3 upload + GitHub PR)")
+
+        # Store mode for later use
+        self.env["_local_gitops_mode"] = local_gitops_mode
 
         # Fleet deployment options
         self_service = bool(self.env.get("self_service", True))
@@ -1004,6 +1039,10 @@ class FleetImporter(Processor):
 
         icon_path_str = self.env.get("icon", "").strip()
 
+        # Dry run notification
+        if dry_run:
+            self.output("DRY RUN MODE: Package will be built and hashed, but S3 upload and YAML updates will be skipped.")
+
         # Validate label targeting - only one of include/exclude allowed
         if labels_include_any and labels_exclude_any:
             raise ProcessorError(
@@ -1016,153 +1055,232 @@ class FleetImporter(Processor):
                 "CATEGORIES is required when SELF_SERVICE is true. Please specify at least one category."
             )
 
-        # Clone GitOps repository first (fail early if this doesn't work)
-        self.output(f"Cloning GitOps repository: {gitops_repo_url}")
+        # Initialize variables
         temp_dir = None
-        extracted_icon_path = None  # Track extracted icon for cleanup
+        extracted_icon_path = None
+        icon_relative_path = None
+
         try:
-            temp_dir = self._clone_gitops_repo(gitops_repo_url, github_token)
-            self.output(f"Repository cloned to: {temp_dir}")
+            # Clone GitOps repository and handle icons (skip in dry run or local mode)
+            if not dry_run and not local_gitops_mode:
+                self.output(f"Cloning GitOps repository: {gitops_repo_url}")
+                temp_dir = self._clone_gitops_repo(gitops_repo_url, github_token)
+                self.output(f"Repository cloned to: {temp_dir}")
 
-            # Handle icon - either from manual path or auto-extraction
-            icon_relative_path = None
-
-            if icon_path_str:
-                # Manual icon path provided
-                icon_relative_path = self._copy_icon_to_gitops_repo(
-                    temp_dir, icon_path_str, software_title
-                )
-            else:
-                # Try to extract icon from package automatically
-                self.output("Attempting to extract icon from package automatically...")
-                extracted_icon_path = self._extract_icon_from_pkg(pkg_path)
-
-                if extracted_icon_path and extracted_icon_path.exists():
-                    self.output(
-                        f"Successfully extracted icon: {extracted_icon_path.name}"
-                    )
-                    # Copy extracted icon to GitOps repo
+                # Handle icon - either from manual path or auto-extraction
+                if icon_path_str:
+                    # Manual icon path provided
                     icon_relative_path = self._copy_icon_to_gitops_repo(
-                        temp_dir, str(extracted_icon_path), software_title
+                        temp_dir, icon_path_str, software_title
                     )
                 else:
-                    self.output(
-                        "Could not extract icon from package. Skipping icon in GitOps."
-                    )
+                    # Try to extract icon from package automatically
+                    self.output("Attempting to extract icon from package automatically...")
+                    extracted_icon_path = self._extract_icon_from_pkg(pkg_path)
 
-            # Upload package to S3
-            self.output(f"Uploading package to S3 bucket: {aws_s3_bucket}")
-            s3_key, package_was_uploaded = self._upload_to_s3(
-                aws_s3_bucket, software_title, version, pkg_path
-            )
-            self.output(f"Package in S3: {s3_key}")
+                    if extracted_icon_path and extracted_icon_path.exists():
+                        self.output(
+                            f"Successfully extracted icon: {extracted_icon_path.name}"
+                        )
+                        # Copy extracted icon to GitOps repo
+                        icon_relative_path = self._copy_icon_to_gitops_repo(
+                            temp_dir, str(extracted_icon_path), software_title
+                        )
+                    else:
+                        self.output(
+                            "Could not extract icon from package. Skipping icon in GitOps."
+                        )
 
-            # Calculate SHA-256 hash
-            # If package was uploaded, hash the local file
-            # If package already existed in S3, download and hash it to ensure accuracy
-            if package_was_uploaded:
-                self.output(
-                    f"Calculating SHA-256 hash from local file: {pkg_path.name}"
-                )
-                hash_sha256 = self._calculate_file_sha256(pkg_path)
-            else:
-                self.output(
-                    "Package already exists in S3. Downloading to calculate accurate SHA-256 hash..."
-                )
-                hash_sha256 = self._calculate_s3_file_sha256(aws_s3_bucket, s3_key)
-
+            # Calculate SHA-256 hash (always done, even in dry run)
+            self.output(f"Calculating SHA-256 hash from local file: {pkg_path.name}")
+            hash_sha256 = self._calculate_file_sha256(pkg_path)
             self.output(f"SHA-256: {hash_sha256}")
-
-            # Construct CloudFront URL
-            cloudfront_url = self._construct_cloudfront_url(
-                aws_cloudfront_domain, s3_key
-            )
-            self.output(f"CloudFront URL: {cloudfront_url}")
-            self.env["cloudfront_url"] = cloudfront_url
             self.env["hash_sha256"] = hash_sha256
 
-            # Clean up old versions in S3
-            if s3_retention_versions > 0:
-                self.output(
-                    f"Cleaning up old S3 versions (retaining {s3_retention_versions} most recent)..."
-                )
-                self._cleanup_old_s3_versions(
-                    aws_s3_bucket, software_title, version, s3_retention_versions
-                )
+            if dry_run:
+                # Dry run: Output what would be done without actually doing it
+                s3_key = f"{software_title}/{software_title}-{version}.pkg"
+                cloudfront_url = self._construct_cloudfront_url(aws_cloudfront_domain, s3_key)
+
+                self.output("[DRY RUN] Would upload package to S3:")
+                self.output(f"  Bucket: {aws_s3_bucket}")
+                self.output(f"  Key: {s3_key}")
+                self.output(f"  CloudFront URL: {cloudfront_url}")
+                self.output(f"  SHA-256: {hash_sha256}")
+
+                if s3_retention_versions > 0:
+                    self.output(f"[DRY RUN] Would clean up old S3 versions (retaining {s3_retention_versions} most recent)")
+
+                self.env["cloudfront_url"] = cloudfront_url
             else:
-                self.output("S3 pruning disabled (s3_retention_versions = 0)")
+                # Normal mode: Actually upload to S3
+                self.output(f"Uploading package to S3 bucket: {aws_s3_bucket}")
+                s3_key, package_was_uploaded = self._upload_to_s3(
+                    aws_s3_bucket, software_title, version, pkg_path
+                )
+                self.output(f"Package in S3: {s3_key}")
 
-            # Create software package YAML file
-            self.output(f"Creating software package YAML in {gitops_software_dir}")
-            package_yaml_path = self._create_software_package_yaml(
-                temp_dir,
-                gitops_software_dir,
-                software_title,
-                cloudfront_url,
-                hash_sha256,
-                install_script,
-                uninstall_script,
-                pre_install_query,
-                post_install_script,
-                icon_relative_path,
-                display_name,
-            )
+                # Construct package URL (CloudFront or direct S3)
+                if local_gitops_mode:
+                    # Local mode: use S3 endpoint URL directly
+                    s3_endpoint = self.env.get("s3_endpoint_url", "")
+                    if s3_endpoint:
+                        # Remove trailing slash
+                        s3_endpoint = s3_endpoint.rstrip("/")
+                        package_url = f"{s3_endpoint}/{aws_s3_bucket}/{s3_key}"
+                    else:
+                        # Fallback to AWS S3 URL
+                        package_url = f"https://{aws_s3_bucket}.s3.amazonaws.com/{s3_key}"
+                    self.output(f"Package URL: {package_url}")
+                else:
+                    # Full GitOps mode: use CloudFront
+                    package_url = self._construct_cloudfront_url(aws_cloudfront_domain, s3_key)
+                    self.output(f"CloudFront URL: {package_url}")
 
-            # Update team YAML file to reference the package
-            self.output(f"Updating team YAML: {gitops_team_yaml_path}")
-            team_yaml_path = Path(temp_dir) / gitops_team_yaml_path
-            self._update_team_yaml(
-                team_yaml_path,
-                package_yaml_path,
-                software_title,
-                self_service,
-                automatic_install,
-                labels_include_any,
-                labels_exclude_any,
-                categories,
-            )
+                self.env["cloudfront_url"] = package_url  # Keep same env var name for compatibility
 
-            # Create auto-update policy if enabled
-            policy_yaml_path = None
-            automatic_update = bool(self.env.get("automatic_update", False))
-            if automatic_update:
-                self.output("Auto-update policy enabled - creating policy YAML...")
-                try:
-                    policy_yaml_path = self._create_or_update_policy_gitops(
-                        temp_dir,
-                        software_title,
-                        version,
-                        pkg_path,
-                    )
-                except Exception as e:
-                    # Log warning but don't fail the entire workflow
+                # Clean up old versions in S3
+                if s3_retention_versions > 0:
                     self.output(
-                        f"Warning: Failed to create auto-update policy YAML: {e}. "
-                        "Package upload succeeded, but policy creation failed."
+                        f"Cleaning up old S3 versions (retaining {s3_retention_versions} most recent)..."
                     )
+                    self._cleanup_old_s3_versions(
+                        aws_s3_bucket, software_title, version, s3_retention_versions
+                    )
+                else:
+                    self.output("S3 pruning disabled (s3_retention_versions = 0)")
 
-            # Create Git branch, commit, and push
-            branch_name = f"autopkg/{self._slugify(software_title)}-{version}"
-            self.output(f"Creating Git branch: {branch_name}")
-            self._commit_and_push(
-                temp_dir,
-                branch_name,
-                software_title,
-                version,
-                package_yaml_path,
-                team_yaml_path,
-                icon_relative_path,
-                policy_yaml_path,
-            )
-            self.env["git_branch"] = branch_name
+            if dry_run:
+                # Dry run: Output what would be done without creating YAML or Git operations
+                self.output("[DRY RUN] Would create software package YAML:")
+                self.output(f"  Directory: {gitops_software_dir}")
+                self.output(f"  Software: {software_title}")
+                self.output(f"  Version: {version}")
+                self.output(f"  CloudFront URL: {cloudfront_url}")
+                self.output(f"  Hash: {hash_sha256}")
 
-            # Create pull request
-            self.output("Creating pull request...")
-            pr_url = self._create_pull_request(
-                gitops_repo_url, github_token, branch_name, software_title, version
-            )
-            self.output(f"Pull request created: {pr_url}")
-            self.env["pull_request_url"] = pr_url
+                self.output(f"[DRY RUN] Would update team YAML: {gitops_team_yaml_path}")
+                self.output(f"  Self-service: {self_service}")
+                self.output(f"  Automatic install: {automatic_install}")
+                if labels_include_any:
+                    self.output(f"  Labels (include any): {labels_include_any}")
+                if labels_exclude_any:
+                    self.output(f"  Labels (exclude any): {labels_exclude_any}")
+                if categories:
+                    self.output(f"  Categories: {categories}")
+
+                automatic_update = bool(self.env.get("automatic_update", False))
+                if automatic_update:
+                    self.output("[DRY RUN] Would create auto-update policy YAML")
+
+                branch_name = f"autopkg/{self._slugify(software_title)}-{version}"
+                self.output(f"[DRY RUN] Would create Git branch: {branch_name}")
+                self.output(f"[DRY RUN] Would create pull request to: {gitops_repo_url}")
+                self.output("")
+                self.output("DRY RUN COMPLETE - No changes were made to S3 or Git repository")
+
+                self.env["git_branch"] = branch_name
+                self.env["pull_request_url"] = ""
+            elif local_gitops_mode:
+                # Local GitOps mode: Update local software.yml file
+                gitops_software_subpath = self.env.get("gitops_software_subpath")
+                gitops_software_filename = self.env.get("gitops_software_filename")
+
+                # Construct full path to software.yml file
+                yaml_file_path = Path(gitops_software_dir) / gitops_software_subpath / gitops_software_filename
+                yaml_file_path = yaml_file_path.resolve()
+
+                self.output(f"Updating local software YAML: {yaml_file_path}")
+
+                # Update or create the YAML file with package URL and hash
+                self._update_local_software_yaml(
+                    yaml_file_path,
+                    package_url,
+                    hash_sha256,
+                    version,
+                )
+
+                self.output(f"Successfully updated {yaml_file_path}")
+                self.output(f"  URL: {package_url}")
+                self.output(f"  Hash: {hash_sha256}")
+                self.output(f"  Version: {version}")
+
+                # Set env vars for compatibility
+                self.env["git_branch"] = ""
+                self.env["pull_request_url"] = ""
+            else:
+                # Full GitHub PR GitOps mode: create YAML files and Git operations
+                # Create software package YAML file
+                self.output(f"Creating software package YAML in {gitops_software_dir}")
+                package_yaml_path = self._create_software_package_yaml(
+                    temp_dir,
+                    gitops_software_dir,
+                    software_title,
+                    package_url,
+                    hash_sha256,
+                    install_script,
+                    uninstall_script,
+                    pre_install_query,
+                    post_install_script,
+                    icon_relative_path,
+                    display_name,
+                )
+
+                # Update team YAML file to reference the package
+                self.output(f"Updating team YAML: {gitops_team_yaml_path}")
+                team_yaml_path = Path(temp_dir) / gitops_team_yaml_path
+                self._update_team_yaml(
+                    team_yaml_path,
+                    package_yaml_path,
+                    software_title,
+                    self_service,
+                    automatic_install,
+                    labels_include_any,
+                    labels_exclude_any,
+                    categories,
+                )
+
+                # Create auto-update policy if enabled
+                policy_yaml_path = None
+                automatic_update = bool(self.env.get("automatic_update", False))
+                if automatic_update:
+                    self.output("Auto-update policy enabled - creating policy YAML...")
+                    try:
+                        policy_yaml_path = self._create_or_update_policy_gitops(
+                            temp_dir,
+                            software_title,
+                            version,
+                            pkg_path,
+                        )
+                    except Exception as e:
+                        # Log warning but don't fail the entire workflow
+                        self.output(
+                            f"Warning: Failed to create auto-update policy YAML: {e}. "
+                            "Package upload succeeded, but policy creation failed."
+                        )
+
+                # Create Git branch, commit, and push
+                branch_name = f"autopkg/{self._slugify(software_title)}-{version}"
+                self.output(f"Creating Git branch: {branch_name}")
+                self._commit_and_push(
+                    temp_dir,
+                    branch_name,
+                    software_title,
+                    version,
+                    package_yaml_path,
+                    team_yaml_path,
+                    icon_relative_path,
+                    policy_yaml_path,
+                )
+                self.env["git_branch"] = branch_name
+
+                # Create pull request
+                self.output("Creating pull request...")
+                pr_url = self._create_pull_request(
+                    gitops_repo_url, github_token, branch_name, software_title, version
+                )
+                self.output(f"Pull request created: {pr_url}")
+                self.env["pull_request_url"] = pr_url
 
         except Exception as e:
             # If we have a CloudFront URL, log it so it can be manually added
@@ -1187,6 +1305,59 @@ class FleetImporter(Processor):
                     self.output(f"Warning: Failed to cleanup temp dir: {e}")
 
     # ------------------- helpers -------------------
+
+    def _update_local_software_yaml(
+        self,
+        yaml_file_path: Path,
+        package_url: str,
+        hash_sha256: str,
+        version: str,
+    ):
+        """Update local software.yml file with package URL and hash.
+
+        Args:
+            yaml_file_path: Path to the software YAML file
+            package_url: URL of the package in S3
+            hash_sha256: SHA256 hash of the package
+            version: Package version
+
+        Raises:
+            ProcessorError: If YAML file cannot be read or written
+        """
+        # Import yaml library
+        try:
+            import yaml
+        except ImportError:
+            raise ProcessorError(
+                "PyYAML is required for local GitOps mode.\n"
+                "Install it into AutoPkg's Python environment."
+            )
+
+        # Read existing YAML file or create new structure
+        if yaml_file_path.exists():
+            self.output(f"Reading existing YAML file: {yaml_file_path}")
+            try:
+                with open(yaml_file_path, 'r') as f:
+                    data = yaml.safe_load(f) or {}
+            except Exception as e:
+                raise ProcessorError(f"Failed to read YAML file {yaml_file_path}: {e}")
+        else:
+            self.output(f"Creating new YAML file: {yaml_file_path}")
+            # Create parent directory if it doesn't exist
+            yaml_file_path.parent.mkdir(parents=True, exist_ok=True)
+            data = {}
+
+        # Update fields
+        data['url'] = package_url
+        data['hash_sha256'] = hash_sha256
+        data['version'] = version
+
+        # Write updated YAML
+        try:
+            with open(yaml_file_path, 'w') as f:
+                yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
+        except Exception as e:
+            raise ProcessorError(f"Failed to write YAML file {yaml_file_path}: {e}")
 
     def _slugify(self, text: str) -> str:
         """Convert text to a URL-safe slug.
@@ -1802,14 +1973,22 @@ class FleetImporter(Processor):
             )
 
         access_key, secret_key, region = self._get_aws_credentials()
+        endpoint_url = self.env.get("s3_endpoint_url")
 
         try:
-            s3_client = boto3.client(
-                "s3",
-                aws_access_key_id=access_key,
-                aws_secret_access_key=secret_key,
-                region_name=region,
-            )
+            client_args = {
+                "service_name": "s3",
+                "aws_access_key_id": access_key,
+                "aws_secret_access_key": secret_key,
+                "region_name": region,
+            }
+
+            # Add custom endpoint URL for S3-compatible storage (e.g., SeaweedFS)
+            if endpoint_url:
+                client_args["endpoint_url"] = endpoint_url
+                self.output(f"Using custom S3 endpoint: {endpoint_url}")
+
+            s3_client = boto3.client(**client_args)
             return s3_client
         except Exception as e:
             raise ProcessorError(f"Failed to create S3 client: {e}")
