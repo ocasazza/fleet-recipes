@@ -139,13 +139,18 @@ class ProductBuildCreator(Processor):
 
         # Set output variables
         self.env["pkg_path"] = output_pkg
+
+        # Get identifier and version from environment (set by recipe Input)
+        identifier = self.env.get("IDENTIFIER", "unknown")
+        version = self.env.get("VERSION", "1.0.0")
+
         self.env["pkg_creator_summary_result"] = {
             "summary_text": "The following distribution packages were built:",
-            "report_fields": ["package", "size_mb", "signed"],
+            "report_fields": ["identifier", "version", "pkg_path"],
             "data": {
-                "package": os.path.basename(output_pkg),
-                "size_mb": f"{pkg_size_mb:.2f}",
-                "signed": "Yes" if signing_identity else "No",
+                "identifier": identifier,
+                "version": version,
+                "pkg_path": output_pkg,
             },
         }
 
@@ -157,7 +162,9 @@ class ProductBuildCreator(Processor):
             if "signed" in sig_output.lower():
                 self.output("✓ Package signature verified")
 
-        self.output(f"✓ Distribution package created: {output_pkg} ({pkg_size_mb:.2f} MB)")
+        self.output(
+            f"✓ Distribution package created: {output_pkg} ({pkg_size_mb:.2f} MB)"
+        )
 
 
 if __name__ == "__main__":
