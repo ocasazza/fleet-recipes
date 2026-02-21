@@ -622,9 +622,7 @@ class FleetImporter(Processor):
         _ = self.env.get("platform", DEFAULT_PLATFORM)  # noqa: F841
 
         # Check for dry_run mode
-        dry_run_raw = self.env.get("dry_run", False)
-        dry_run = self._parse_bool(dry_run_raw)
-        self.output(f"DEBUG: dry_run_raw={dry_run_raw!r} (type={type(dry_run_raw).__name__}), parsed={dry_run}")
+        dry_run = self._parse_bool(self.env.get("dry_run", False))
 
         # Get local GitOps parameters for YAML updates (optional)
         gitops_software_dir = self.env.get("gitops_software_dir")
