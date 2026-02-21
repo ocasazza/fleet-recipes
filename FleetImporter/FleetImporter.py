@@ -1100,7 +1100,15 @@ class FleetImporter(Processor):
             if dry_run:
                 # Dry run: Output what would be done without actually doing it
                 s3_key = f"{software_title}/{software_title}-{version}.pkg"
-                cloudfront_url = self._construct_cloudfront_url(aws_cloudfront_domain, s3_key)
+
+                # Only construct CloudFront URL if domain is provided
+                if aws_cloudfront_domain:
+                    cloudfront_url = self._construct_cloudfront_url(aws_cloudfront_domain, s3_key)
+                elif s3_endpoint_url:
+                    # Use S3 endpoint URL if available (for SeaweedFS/MinIO)
+                    cloudfront_url = f"{s3_endpoint_url}/{aws_s3_bucket}/{s3_key}"
+                else:
+                    cloudfront_url = "N/A"
 
                 self.output("[DRY RUN] Would upload package to S3:")
                 self.output(f"  Bucket: {aws_s3_bucket}")
