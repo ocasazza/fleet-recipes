@@ -569,9 +569,26 @@ class FleetImporter(Processor):
         # Return relative path for Git operations
         return f"lib/policies/{policy_filename}"
 
+    def _parse_bool(self, value):
+        """Parse boolean from string or bool value.
+
+        AutoPkg passes booleans as strings via --key, so we need to handle:
+        - "true", "True", "TRUE", "1" -> True
+        - "false", "False", "FALSE", "0", "" -> False
+        - True, False -> passthrough
+        - None -> False
+        """
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.lower() in ("true", "1", "yes")
+        if isinstance(value, int):
+            return bool(value)
+        return bool(value)
+
     def main(self):
         # Check if GitOps mode is enabled
-        gitops_mode = bool(self.env.get("gitops_mode", False))
+        gitops_mode = self._parse_bool(self.env.get("gitops_mode", False))
 
         if gitops_mode:
             self._run_gitops_workflow()
@@ -591,7 +608,7 @@ class FleetImporter(Processor):
         _ = self.env.get("platform", DEFAULT_PLATFORM)  # noqa: F841
 
         # Check for dry_run mode
-        dry_run = bool(self.env.get("dry_run", False))
+        dry_run = self._parse_bool(self.env.get("dry_run", False))
 
         # Get local GitOps parameters for YAML updates (optional)
         gitops_software_dir = self.env.get("gitops_software_dir")
