@@ -45,6 +45,9 @@ class ProductBuildCreator(Processor):
         "pkg_path": {
             "description": "Path to created package (for use by FleetImporter)",
         },
+        "pkg_creator_summary_result": {
+            "description": "Summary of package creation",
+        },
     }
 
     def run_command(self, cmd, description):
@@ -142,6 +145,23 @@ class ProductBuildCreator(Processor):
 
         # Set output variables
         self.env["pkg_path"] = output_pkg
+
+        # Get identifier and version from environment (set by recipe Input)
+        identifier = self.env.get("IDENTIFIER", "unknown")
+        version = self.env.get("VERSION", "1.0.0")
+
+        # Debug: Log what we're about to set in summary
+        self.output(f"DEBUG: Setting summary with identifier={identifier}, version={version}, pkg_path={output_pkg}")
+
+        self.env["pkg_creator_summary_result"] = {
+            "summary_text": "The following distribution packages were built:",
+            "report_fields": ["identifier", "version", "pkg_path"],
+            "data": {
+                "identifier": identifier,
+                "version": version,
+                "pkg_path": output_pkg,
+            },
+        }
 
         # Verify signature if signed
         if signing_identity:
