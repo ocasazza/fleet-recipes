@@ -890,8 +890,42 @@ class FleetImporter(Processor):
         # Check for graceful exit case (409 Conflict)
         if upload_info.get("package_exists"):
             self.output(
-                "Package already exists in Fleet (409 Conflict). Exiting gracefully."
+                "Package already exists in Fleet (409 Conflict)."
             )
+
+            # Calculate hash from local package for yml update
+            hash_sha256 = self._calculate_file_sha256(pkg_path)
+            self.env["hash_sha256"] = hash_sha256
+
+            # Update local software YAML file if GitOps parameters are provided
+            # (even on 409, to ensure yml is in sync with the package we built)
+            if gitops_software_dir and gitops_software_subpath and gitops_software_filename and hash_sha256:
+                yaml_file_path = Path(gitops_software_dir) / gitops_software_subpath / gitops_software_filename
+
+                # Query Fleet to get the existing package info for the URL
+                try:
+                    existing_pkg = self._check_existing_package(
+                        fleet_api_base, fleet_token, team_id, software_title, version
+                    )
+                    if existing_pkg and existing_pkg.get("installer_id"):
+                        installer_id = existing_pkg["installer_id"]
+                        package_url = f"{fleet_api_base}/api/latest/fleet/software/versions/{installer_id}/package"
+
+                        if not yaml_file_path.is_absolute():
+                            yaml_file_path = yaml_file_path.resolve()
+
+                        self.output(f"Updating local software YAML (409 conflict): {yaml_file_path}")
+
+                        # Update the YAML file
+                        self._update_local_software_yaml(
+                            yaml_file_path,
+                            package_url,
+                            hash_sha256,
+                            version,
+                        )
+                except Exception as e:
+                    self.output(f"Warning: Could not update yml after 409: {e}")
+
             self.env["fleet_title_id"] = None
             self.env["fleet_installer_id"] = None
             return
