@@ -743,8 +743,8 @@ class FleetImporter(Processor):
                 "Only one of labels_include_any or labels_exclude_any may be specified, not both."
             )
 
-        # Validate categories - required when self_service is enabled
-        if self_service and not categories:
+        # Validate categories - required when self_service is enabled (not for bootstrap packages)
+        if package_type == "software" and self_service and not categories:
             raise ProcessorError(
                 "CATEGORIES is required when SELF_SERVICE is true. Please specify at least one category."
             )
@@ -1158,8 +1158,8 @@ class FleetImporter(Processor):
                 "Only one of labels_include_any or labels_exclude_any may be specified, not both."
             )
 
-        # Validate categories - required when self_service is enabled
-        if self_service and not categories:
+        # Validate categories - required when self_service is enabled (not for bootstrap packages)
+        if package_type == "software" and self_service and not categories:
             raise ProcessorError(
                 "CATEGORIES is required when SELF_SERVICE is true. Please specify at least one category."
             )
