@@ -602,7 +602,7 @@ class FleetImporter(Processor):
 
     def main(self):
         # Check if GitOps mode is enabled
-        gitops_mode = self._parse_self._parse_bool(self.env.get("gitops_mode", False))
+        gitops_mode = self._parse_bool(self.env.get("gitops_mode", False))
 
         if gitops_mode:
             self._run_gitops_workflow()
@@ -622,7 +622,7 @@ class FleetImporter(Processor):
         _ = self.env.get("platform", DEFAULT_PLATFORM)  # noqa: F841
 
         # Check for dry_run mode
-        dry_run = self._parse_self._parse_bool(self.env.get("dry_run", False))
+        dry_run = self._parse_bool(self.env.get("dry_run", False))
 
         # Get local GitOps parameters for YAML updates (optional)
         gitops_software_dir = self.env.get("gitops_software_dir")
@@ -1025,7 +1025,7 @@ class FleetImporter(Processor):
         gitops_team_yaml_path = self.env.get("gitops_team_yaml_path")
         github_token = self.env.get("github_token")
         s3_retention_versions = int(self.env.get("s3_retention_versions", 0))
-        dry_run = self._parse_self._parse_bool(self.env.get("dry_run", False))
+        dry_run = self._parse_bool(self.env.get("dry_run", False))
 
         # Detect GitOps mode type: local-only or full GitHub PR workflow
         local_gitops_mode = not bool(gitops_repo_url)
