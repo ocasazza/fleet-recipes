@@ -895,32 +895,11 @@ class FleetImporter(Processor):
         # Check for graceful exit case (409 Conflict)
         if upload_info.get("package_exists"):
             self.output(
-                "Package already exists in Fleet (409 Conflict)."
+                "Package already exists in Fleet (409 Conflict). No yml update needed - Fleet already has this package."
             )
 
-            # Calculate hash from local package for yml update
-            hash_sha256 = self._calculate_file_sha256(pkg_path)
-            self.env["hash_sha256"] = hash_sha256
-
-            # Update local software YAML file if GitOps parameters are provided
-            # (even on 409, to ensure yml is in sync with the package we built)
-            if gitops_software_dir and gitops_software_subpath and gitops_software_filename and hash_sha256:
-                yaml_file_path = Path(gitops_software_dir) / gitops_software_subpath / gitops_software_filename
-
-                if not yaml_file_path.is_absolute():
-                    yaml_file_path = yaml_file_path.resolve()
-
-                try:
-                    self.output(f"Updating local software YAML (409 conflict): {yaml_file_path}")
-
-                    # Update the YAML file (no URL needed - Fleet already has this package)
-                    self._update_local_software_yaml(
-                        yaml_file_path,
-                        hash_sha256,
-                        version,
-                    )
-                except Exception as e:
-                    self.output(f"Warning: Could not update yml after 409: {e}")
+            # Don't update yml file - the hash in Fleet may be different than our local build
+            # GitOps should use the existing hash in the yml file that matches Fleet
 
             self.env["fleet_title_id"] = None
             self.env["fleet_installer_id"] = None
