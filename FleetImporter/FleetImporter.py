@@ -771,81 +771,102 @@ class FleetImporter(Processor):
         )
 
         if existing_package:
-            self.output(
-                f"Package {software_title} {version} already exists in Fleet. Skipping upload."
-            )
             # Calculate hash from local package file
             hash_sha256 = self._calculate_file_sha256(pkg_path)
+            fleet_hash = existing_package.get("hash_sha256", "")
+
+            self.output(
+                f"Package {software_title} {version} already exists in Fleet (hash: {fleet_hash[:16] + '...' if fleet_hash else 'none'})"
+            )
             self.output(
                 f"Calculated SHA-256 hash from local file: {hash_sha256[:16]}..."
             )
-            # Set output variables for existing package
-            title_id = existing_package.get("title_id")
-            self.env["fleet_title_id"] = title_id
-            self.env["fleet_installer_id"] = None
-            self.env["hash_sha256"] = hash_sha256
 
-            # Update display name if provided (even for existing packages)
-            if title_id and display_name:
+            # Compare hashes - if they differ, delete the old package and re-upload
+            if hash_sha256 != fleet_hash:
                 self.output(
-                    f"Updating display name for existing software title ID {title_id}..."
+                    f"Hash mismatch detected! Local hash differs from Fleet hash. "
+                    f"Deleting old package and re-uploading..."
                 )
-                try:
-                    self._fleet_update_display_name(
-                        fleet_api_base,
-                        fleet_token,
-                        title_id,
-                        team_id,
-                        display_name,
+                if self._fleet_delete_package(fleet_api_base, fleet_token, software_title, team_id):
+                    self.output("Old package deleted successfully. Continuing with upload of new package...")
+                    # Continue to upload section below (don't return early)
+                else:
+                    raise ProcessorError(
+                        f"Failed to delete existing package {software_title} {version} with mismatched hash"
                     )
-                except Exception as e:
-                    # Log warning but don't fail the entire workflow
-                    self.output(
-                        f"Warning: Failed to update display name: {e}. "
-                        "Display name may show default value."
-                    )
+            else:
+                # Hashes match - skip upload
+                self.output(
+                    f"Package {software_title} {version} already exists with matching hash. Skipping upload."
+                )
+                # Set output variables for existing package
+                title_id = existing_package.get("title_id")
+                self.env["fleet_title_id"] = title_id
+                self.env["fleet_installer_id"] = None
+                self.env["hash_sha256"] = hash_sha256
 
-            # Still create/update auto-update policy if enabled
-            automatic_update = self._parse_bool(self.env.get("automatic_update", False))
-            if automatic_update and title_id:
-                self.output("Auto-update policy enabled - creating/updating policy...")
-                try:
-                    self._create_or_update_policy_direct(
-                        fleet_api_base,
-                        fleet_token,
-                        team_id,
-                        software_title,
+                # Update display name if provided (even for existing packages)
+                if title_id and display_name:
+                    self.output(
+                        f"Updating display name for existing software title ID {title_id}..."
+                    )
+                    try:
+                        self._fleet_update_display_name(
+                            fleet_api_base,
+                            fleet_token,
+                            title_id,
+                            team_id,
+                            display_name,
+                        )
+                    except Exception as e:
+                        # Log warning but don't fail the entire workflow
+                        self.output(
+                            f"Warning: Failed to update display name: {e}. "
+                            "Display name may show default value."
+                        )
+
+                # Still create/update auto-update policy if enabled
+                automatic_update = self._parse_bool(self.env.get("automatic_update", False))
+                if automatic_update and title_id:
+                    self.output("Auto-update policy enabled - creating/updating policy...")
+                    try:
+                        self._create_or_update_policy_direct(
+                            fleet_api_base,
+                            fleet_token,
+                            team_id,
+                            software_title,
+                            version,
+                            title_id,
+                            pkg_path,
+                        )
+                    except Exception as e:
+                        # Log warning but don't fail the entire workflow
+                        self.output(
+                            f"Warning: Failed to create auto-update policy: {e}. "
+                            "Package already exists, but policy creation failed."
+                        )
+
+                # Update local software YAML file if GitOps parameters are provided
+                # (even when package already exists, to ensure yml is in sync)
+                if gitops_software_dir and gitops_software_subpath and gitops_software_filename and hash_sha256 and title_id:
+                    yaml_file_path = Path(gitops_software_dir) / gitops_software_subpath / gitops_software_filename
+
+                    if not yaml_file_path.is_absolute():
+                        yaml_file_path = yaml_file_path.resolve()
+
+                    self.output(f"Updating local software YAML (package already exists): {yaml_file_path}")
+
+                    # Update the YAML file with hash only
+                    # Do NOT include Fleet API URLs - they're internal/temporary
+                    self._update_local_software_yaml(
+                        yaml_file_path,
+                        hash_sha256,
                         version,
-                        title_id,
-                        pkg_path,
-                    )
-                except Exception as e:
-                    # Log warning but don't fail the entire workflow
-                    self.output(
-                        f"Warning: Failed to create auto-update policy: {e}. "
-                        "Package already exists, but policy creation failed."
+                        package_url=None,  # No URL in Fleet API mode
                     )
 
-            # Update local software YAML file if GitOps parameters are provided
-            # (even when package already exists, to ensure yml is in sync)
-            if gitops_software_dir and gitops_software_subpath and gitops_software_filename and hash_sha256 and title_id:
-                yaml_file_path = Path(gitops_software_dir) / gitops_software_subpath / gitops_software_filename
-
-                if not yaml_file_path.is_absolute():
-                    yaml_file_path = yaml_file_path.resolve()
-
-                self.output(f"Updating local software YAML (package already exists): {yaml_file_path}")
-
-                # Update the YAML file with hash only
-                # Do NOT include Fleet API URLs - they're internal/temporary
-                self._update_local_software_yaml(
-                    yaml_file_path,
-                    hash_sha256,
-                    version,
-                    package_url=None,  # No URL in Fleet API mode
-                )
-
-            return
+                return
 
         # Upload to Fleet
         if package_type == "bootstrap":
