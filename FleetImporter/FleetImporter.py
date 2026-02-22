@@ -831,24 +831,19 @@ class FleetImporter(Processor):
             if gitops_software_dir and gitops_software_subpath and gitops_software_filename and hash_sha256 and title_id:
                 yaml_file_path = Path(gitops_software_dir) / gitops_software_subpath / gitops_software_filename
 
-                # Get the existing installer_id from Fleet to construct package URL
-                existing_installer_id = existing_package.get("installer_id")
-                if existing_installer_id:
-                    # Construct Fleet package URL
-                    package_url = f"{fleet_api_base}/api/latest/fleet/software/versions/{existing_installer_id}/package"
+                if not yaml_file_path.is_absolute():
+                    yaml_file_path = yaml_file_path.resolve()
 
-                    if not yaml_file_path.is_absolute():
-                        yaml_file_path = yaml_file_path.resolve()
+                self.output(f"Updating local software YAML (package already exists): {yaml_file_path}")
 
-                    self.output(f"Updating local software YAML (package already exists): {yaml_file_path}")
-
-                    # Update the YAML file with Fleet package URL and hash
-                    self._update_local_software_yaml(
-                        yaml_file_path,
-                        hash_sha256,
-                        version,
-                        package_url,
-                    )
+                # Update the YAML file with hash only
+                # Do NOT include Fleet API URLs - they're internal/temporary
+                self._update_local_software_yaml(
+                    yaml_file_path,
+                    hash_sha256,
+                    version,
+                    package_url=None,  # No URL in Fleet API mode
+                )
 
             return
 
@@ -924,21 +919,18 @@ class FleetImporter(Processor):
         if gitops_software_dir and gitops_software_subpath and gitops_software_filename and hash_sha256:
             yaml_file_path = Path(gitops_software_dir) / gitops_software_subpath / gitops_software_filename
 
-            # Construct Fleet package URL from fleet_api_base
-            # Fleet package URL format: https://fleet.example.com/api/latest/fleet/software/versions/{installer_id}/package
-            package_url = f"{fleet_api_base}/api/latest/fleet/software/versions/{installer_id}/package"
-
             if not yaml_file_path.is_absolute():
                 yaml_file_path = yaml_file_path.resolve()
 
             self.output(f"Updating local software YAML: {yaml_file_path}")
 
-            # Update or create the YAML file with Fleet package URL and hash from Fleet
+            # Update or create the YAML file with hash only
+            # Do NOT include Fleet API URLs - they're internal/temporary and break when packages are deleted
             self._update_local_software_yaml(
                 yaml_file_path,
                 hash_sha256,
                 version,
-                package_url,
+                package_url=None,  # No URL in Fleet API mode
             )
 
         # Upload icon if provided
