@@ -974,6 +974,7 @@ class FleetImporter(Processor):
                 hash_sha256,
                 version,
                 package_url=None,  # No URL in Fleet API mode
+                display_name=display_name,
             )
 
         # Upload icon if provided
@@ -1380,7 +1381,8 @@ class FleetImporter(Processor):
                     yaml_file_path,
                     hash_sha256,
                     version,
-                    package_url,
+                    package_url=package_url,
+                    display_name=display_name,
                 )
 
                 self.output(f"Successfully updated {yaml_file_path}")
@@ -1495,6 +1497,7 @@ class FleetImporter(Processor):
         hash_sha256: str,
         version: str,
         package_url: str = None,
+        display_name: str = "",
     ):
         """Update local software.yml file with package hash and version.
 
@@ -1503,6 +1506,7 @@ class FleetImporter(Processor):
             hash_sha256: SHA256 hash of the package
             version: Package version
             package_url: URL of the package (optional, only written if provided)
+            display_name: Optional display name for Fleet UI
 
         Raises:
             ProcessorError: If YAML file cannot be read or written
@@ -1535,6 +1539,10 @@ class FleetImporter(Processor):
             data['url'] = package_url
         data['hash_sha256'] = hash_sha256
         data['version'] = version
+
+        # Add display_name if provided
+        if display_name:
+            data['display_name'] = display_name
 
         # Write updated YAML
         try:
