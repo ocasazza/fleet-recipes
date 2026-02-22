@@ -40,6 +40,14 @@ class ProductBuildCreator(Processor):
             ),
             "default": "",
         },
+        "disable_timestamp": {
+            "required": False,
+            "description": (
+                "Disable timestamp when signing (use --timestamp=none). "
+                "Set to true if Apple's timestamp service is blocked by firewall."
+            ),
+            "default": False,
+        },
     }
     output_variables = {
         "pkg_path": {
@@ -74,12 +82,7 @@ class ProductBuildCreator(Processor):
         package_path = self.env["package_path"]
         output_pkg = self.env["output_pkg"]
         signing_identity = self.env.get("signing_identity", "")
-
-        # Skip signing if identity is empty or unsubstituted variable
-        # AutoPkg leaves variables as %var% if the env var is empty
-        if signing_identity and signing_identity.startswith("%"):
-            self.output(f"Signing identity is unsubstituted variable ({signing_identity}), skipping signing")
-            signing_identity = ""
+        disable_timestamp = self.env.get("disable_timestamp", False)
 
         # Validate inputs
         if not os.path.exists(distribution_xml):
@@ -116,16 +119,22 @@ class ProductBuildCreator(Processor):
 
         # Sign if identity provided
         if signing_identity:
-            self.output(f"Signing package with identity: {signing_identity}")
+            timestamp_status = "disabled" if disable_timestamp else "enabled"
+            self.output(f"Signing package with identity: {signing_identity} (timestamp: {timestamp_status})")
 
             productsign_cmd = [
                 "/usr/bin/productsign",
                 "--sign",
                 signing_identity,
-                "--timestamp",
-                unsigned_pkg,
-                output_pkg,
             ]
+
+            # Add timestamp option
+            if disable_timestamp:
+                productsign_cmd.append("--timestamp=none")
+            else:
+                productsign_cmd.append("--timestamp")
+
+            productsign_cmd.extend([unsigned_pkg, output_pkg])
 
             self.run_command(productsign_cmd, "productsign")
 
@@ -145,21 +154,13 @@ class ProductBuildCreator(Processor):
 
         # Set output variables
         self.env["pkg_path"] = output_pkg
-
-        # Get identifier and version from environment (set by recipe Input)
-        identifier = self.env.get("IDENTIFIER", "unknown")
-        version = self.env.get("VERSION", "1.0.0")
-
-        # Debug: Log what we're about to set in summary
-        self.output(f"DEBUG: Setting summary with identifier={identifier}, version={version}, pkg_path={output_pkg}")
-
         self.env["pkg_creator_summary_result"] = {
             "summary_text": "The following distribution packages were built:",
-            "report_fields": ["identifier", "version", "pkg_path"],
+            "report_fields": ["package", "size_mb", "signed"],
             "data": {
-                "identifier": identifier,
-                "version": version,
-                "pkg_path": output_pkg,
+                "package": os.path.basename(output_pkg),
+                "size_mb": f"{pkg_size_mb:.2f}",
+                "signed": "Yes" if signing_identity else "No",
             },
         }
 
@@ -171,9 +172,7 @@ class ProductBuildCreator(Processor):
             if "signed" in sig_output.lower():
                 self.output("✓ Package signature verified")
 
-        self.output(
-            f"✓ Distribution package created: {output_pkg} ({pkg_size_mb:.2f} MB)"
-        )
+        self.output(f"✓ Distribution package created: {output_pkg} ({pkg_size_mb:.2f} MB)")
 
 
 if __name__ == "__main__":
