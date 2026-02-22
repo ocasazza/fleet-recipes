@@ -845,9 +845,9 @@ class FleetImporter(Processor):
                     # Update the YAML file with Fleet package URL and hash
                     self._update_local_software_yaml(
                         yaml_file_path,
-                        package_url,
                         hash_sha256,
                         version,
+                        package_url,
                     )
 
             return
@@ -899,32 +899,30 @@ class FleetImporter(Processor):
 
             # Update local software YAML file if GitOps parameters are provided
             # (even on 409, to ensure yml is in sync with the package we built)
+            self.output(f"DEBUG: gitops_software_dir={gitops_software_dir}")
+            self.output(f"DEBUG: gitops_software_subpath={gitops_software_subpath}")
+            self.output(f"DEBUG: gitops_software_filename={gitops_software_filename}")
+            self.output(f"DEBUG: hash_sha256={hash_sha256}")
+
             if gitops_software_dir and gitops_software_subpath and gitops_software_filename and hash_sha256:
                 yaml_file_path = Path(gitops_software_dir) / gitops_software_subpath / gitops_software_filename
 
-                # Query Fleet to get the existing package info for the URL
+                if not yaml_file_path.is_absolute():
+                    yaml_file_path = yaml_file_path.resolve()
+
                 try:
-                    existing_pkg = self._check_existing_package(
-                        fleet_api_base, fleet_token, team_id, software_title, version
+                    self.output(f"Updating local software YAML (409 conflict): {yaml_file_path}")
+
+                    # Update the YAML file (no URL needed - Fleet already has this package)
+                    self._update_local_software_yaml(
+                        yaml_file_path,
+                        hash_sha256,
+                        version,
                     )
-                    if existing_pkg and existing_pkg.get("installer_id"):
-                        installer_id = existing_pkg["installer_id"]
-                        package_url = f"{fleet_api_base}/api/latest/fleet/software/versions/{installer_id}/package"
-
-                        if not yaml_file_path.is_absolute():
-                            yaml_file_path = yaml_file_path.resolve()
-
-                        self.output(f"Updating local software YAML (409 conflict): {yaml_file_path}")
-
-                        # Update the YAML file
-                        self._update_local_software_yaml(
-                            yaml_file_path,
-                            package_url,
-                            hash_sha256,
-                            version,
-                        )
                 except Exception as e:
                     self.output(f"Warning: Could not update yml after 409: {e}")
+            else:
+                self.output("DEBUG: Skipping yml update - missing required parameters")
 
             self.env["fleet_title_id"] = None
             self.env["fleet_installer_id"] = None
@@ -961,9 +959,9 @@ class FleetImporter(Processor):
             # Update or create the YAML file with Fleet package URL and hash from Fleet
             self._update_local_software_yaml(
                 yaml_file_path,
-                package_url,
                 hash_sha256,
                 version,
+                package_url,
             )
 
         # Upload icon if provided
@@ -1368,9 +1366,9 @@ class FleetImporter(Processor):
                 # Update or create the YAML file with package URL and hash
                 self._update_local_software_yaml(
                     yaml_file_path,
-                    package_url,
                     hash_sha256,
                     version,
+                    package_url,
                 )
 
                 self.output(f"Successfully updated {yaml_file_path}")
@@ -1482,17 +1480,17 @@ class FleetImporter(Processor):
     def _update_local_software_yaml(
         self,
         yaml_file_path: Path,
-        package_url: str,
         hash_sha256: str,
         version: str,
+        package_url: str = None,
     ):
-        """Update local software.yml file with package URL and hash.
+        """Update local software.yml file with package hash and version.
 
         Args:
             yaml_file_path: Path to the software YAML file
-            package_url: URL of the package in S3
             hash_sha256: SHA256 hash of the package
             version: Package version
+            package_url: URL of the package (optional, only written if provided)
 
         Raises:
             ProcessorError: If YAML file cannot be read or written
@@ -1521,7 +1519,8 @@ class FleetImporter(Processor):
             data = {}
 
         # Update fields
-        data['url'] = package_url
+        if package_url:
+            data['url'] = package_url
         data['hash_sha256'] = hash_sha256
         data['version'] = version
 
