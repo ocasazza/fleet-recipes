@@ -623,8 +623,8 @@ class FleetImporter(Processor):
 
         software_title = self.env["software_title"].strip()
         version = self.env["version"].strip()
-        # Platform parameter accepted for future use but not currently utilized
-        _ = self.env.get("platform", DEFAULT_PLATFORM)  # noqa: F841
+        # Platform parameter for software YAML files
+        platform = self.env.get("platform", DEFAULT_PLATFORM)
 
         # Check for dry_run mode
         dry_run = self._parse_bool(self.env.get("dry_run", False))
