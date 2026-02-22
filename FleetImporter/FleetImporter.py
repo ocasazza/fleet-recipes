@@ -791,12 +791,41 @@ class FleetImporter(Processor):
                 delete_success = self._fleet_delete_package(fleet_api_base, fleet_token, software_title, team_id)
                 if delete_success:
                     self.output("Old package deleted successfully. Continuing with upload of new package...")
+                    # Continue to upload section below
                 else:
+                    # Delete failed - package is in use (bootstrap, policy, etc.)
+                    # Update yml with Fleet's hash instead of local hash to keep in sync
                     self.output(
-                        f"Warning: Could not delete existing package (may be in use). "
-                        f"Attempting upload anyway - Fleet may return 409 conflict."
+                        f"Warning: Could not delete existing package (likely in use for bootstrap or policy). "
+                        f"Keeping Fleet's existing package. Updating yml with Fleet hash to maintain sync."
                     )
-                # Continue to upload section below regardless of delete result
+                    self.output(
+                        f"To update this package, manually remove it from bootstrap/policies in Fleet UI first."
+                    )
+
+                    # Set output variables for existing package
+                    title_id = existing_package.get("title_id")
+                    self.env["fleet_title_id"] = title_id
+                    self.env["fleet_installer_id"] = None
+                    self.env["hash_sha256"] = fleet_hash  # Use Fleet's hash, not local
+
+                    # Update local yml with Fleet's hash
+                    if gitops_software_dir and gitops_software_subpath and gitops_software_filename and fleet_hash and title_id:
+                        yaml_file_path = Path(gitops_software_dir) / gitops_software_subpath / gitops_software_filename
+
+                        if not yaml_file_path.is_absolute():
+                            yaml_file_path = yaml_file_path.resolve()
+
+                        self.output(f"Updating local software YAML with Fleet hash: {yaml_file_path}")
+
+                        self._update_local_software_yaml(
+                            yaml_file_path,
+                            fleet_hash,  # Use Fleet's hash
+                            version,
+                            package_url=None,
+                        )
+
+                    return  # Skip upload, keep existing package
             else:
                 # Hashes match - skip upload
                 self.output(
