@@ -884,8 +884,13 @@ class FleetImporter(Processor):
                 display_name,
             )
 
-        if not upload_info:
+        if upload_info is None:
             raise ProcessorError("Fleet package upload failed; no data returned")
+
+        # Bootstrap packages return empty dict on success - handle specially
+        if package_type == "bootstrap":
+            self.output("Bootstrap package uploaded successfully")
+            return  # No further processing needed for bootstrap packages
 
         # Check for graceful exit case (409 Conflict)
         if upload_info.get("package_exists"):
