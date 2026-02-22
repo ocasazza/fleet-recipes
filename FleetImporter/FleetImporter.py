@@ -762,13 +762,17 @@ class FleetImporter(Processor):
                 f"Please upgrade your Fleet server to a supported version."
             )
 
-        # Check if package already exists in Fleet
-        self.output(
-            f"Checking if {software_title} {version} already exists in Fleet..."
-        )
-        existing_package = self._check_existing_package(
-            fleet_api_base, fleet_token, team_id, software_title, version
-        )
+        # Check if package already exists in Fleet (software packages only)
+        # Bootstrap packages use a different endpoint and don't support version checking
+        if package_type == "software":
+            self.output(
+                f"Checking if {software_title} {version} already exists in Fleet..."
+            )
+            existing_package = self._check_existing_package(
+                fleet_api_base, fleet_token, team_id, software_title, version
+            )
+        else:
+            existing_package = None
 
         if existing_package:
             # Calculate hash from local package file
