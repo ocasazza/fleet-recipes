@@ -823,6 +823,9 @@ class FleetImporter(Processor):
                             fleet_hash,  # Use Fleet's hash
                             version,
                             package_url=None,
+                            display_name=display_name,
+                            software_title=software_title,
+                            platform=platform,
                         )
 
                     return  # Skip upload, keep existing package
@@ -895,6 +898,9 @@ class FleetImporter(Processor):
                         hash_sha256,
                         version,
                         package_url=None,  # No URL in Fleet API mode
+                        display_name=display_name,
+                        software_title=software_title,
+                        platform=platform,
                     )
 
                 return
@@ -971,6 +977,8 @@ class FleetImporter(Processor):
                 version,
                 package_url=None,  # No URL in Fleet API mode
                 display_name=display_name,
+                software_title=software_title,
+                platform=platform,
             )
 
         # Upload icon if provided
@@ -1494,6 +1502,8 @@ class FleetImporter(Processor):
         version: str,
         package_url: str = None,
         display_name: str = "",
+        software_title: str = "",
+        platform: str = "",
     ):
         """Update local software.yml file with package hash and version.
 
@@ -1503,6 +1513,8 @@ class FleetImporter(Processor):
             version: Package version
             package_url: URL of the package (optional, only written if provided)
             display_name: Optional display name for Fleet UI
+            software_title: Software title (name field, required for new files)
+            platform: Platform (darwin/linux, required for new files)
 
         Raises:
             ProcessorError: If YAML file cannot be read or written
@@ -1535,6 +1547,12 @@ class FleetImporter(Processor):
             data['url'] = package_url
         data['hash_sha256'] = hash_sha256
         data['version'] = version
+
+        # Write name and platform for new files (required by Fleet GitOps)
+        if software_title and 'name' not in data:
+            data['name'] = software_title
+        if platform and 'platform' not in data:
+            data['platform'] = platform
 
         # Add display_name if provided
         if display_name:
