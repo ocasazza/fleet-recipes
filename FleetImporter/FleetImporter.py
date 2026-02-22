@@ -826,9 +826,30 @@ class FleetImporter(Processor):
                         "Package already exists, but policy creation failed."
                     )
 
-            # Note: We don't update the local YAML when package already exists
-            # because we assume the YAML is already up to date. If the hash differs,
-            # delete the package from Fleet and re-run to force a fresh upload.
+            # Update local software YAML file if GitOps parameters are provided
+            # (even when package already exists, to ensure yml is in sync)
+            if gitops_software_dir and gitops_software_subpath and gitops_software_filename and hash_sha256 and title_id:
+                yaml_file_path = Path(gitops_software_dir) / gitops_software_subpath / gitops_software_filename
+
+                # Get the existing installer_id from Fleet to construct package URL
+                existing_installer_id = existing_package.get("installer_id")
+                if existing_installer_id:
+                    # Construct Fleet package URL
+                    package_url = f"{fleet_api_base}/api/latest/fleet/software/versions/{existing_installer_id}/package"
+
+                    if not yaml_file_path.is_absolute():
+                        yaml_file_path = yaml_file_path.resolve()
+
+                    self.output(f"Updating local software YAML (package already exists): {yaml_file_path}")
+
+                    # Update the YAML file with Fleet package URL and hash
+                    self._update_local_software_yaml(
+                        yaml_file_path,
+                        package_url,
+                        hash_sha256,
+                        version,
+                    )
+
             return
 
         # Upload to Fleet
