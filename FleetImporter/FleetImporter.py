@@ -899,11 +899,6 @@ class FleetImporter(Processor):
 
             # Update local software YAML file if GitOps parameters are provided
             # (even on 409, to ensure yml is in sync with the package we built)
-            self.output(f"DEBUG: gitops_software_dir={gitops_software_dir}")
-            self.output(f"DEBUG: gitops_software_subpath={gitops_software_subpath}")
-            self.output(f"DEBUG: gitops_software_filename={gitops_software_filename}")
-            self.output(f"DEBUG: hash_sha256={hash_sha256}")
-
             if gitops_software_dir and gitops_software_subpath and gitops_software_filename and hash_sha256:
                 yaml_file_path = Path(gitops_software_dir) / gitops_software_subpath / gitops_software_filename
 
@@ -921,8 +916,6 @@ class FleetImporter(Processor):
                     )
                 except Exception as e:
                     self.output(f"Warning: Could not update yml after 409: {e}")
-            else:
-                self.output("DEBUG: Skipping yml update - missing required parameters")
 
             self.env["fleet_title_id"] = None
             self.env["fleet_installer_id"] = None
