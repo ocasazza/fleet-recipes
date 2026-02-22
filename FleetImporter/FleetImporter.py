@@ -782,19 +782,21 @@ class FleetImporter(Processor):
                 f"Calculated SHA-256 hash from local file: {hash_sha256[:16]}..."
             )
 
-            # Compare hashes - if they differ, delete the old package and re-upload
+            # Compare hashes - if they differ, attempt to delete and re-upload
             if hash_sha256 != fleet_hash:
                 self.output(
                     f"Hash mismatch detected! Local hash differs from Fleet hash. "
-                    f"Deleting old package and re-uploading..."
+                    f"Attempting to delete old package and re-upload..."
                 )
-                if self._fleet_delete_package(fleet_api_base, fleet_token, software_title, team_id):
+                delete_success = self._fleet_delete_package(fleet_api_base, fleet_token, software_title, team_id)
+                if delete_success:
                     self.output("Old package deleted successfully. Continuing with upload of new package...")
-                    # Continue to upload section below (don't return early)
                 else:
-                    raise ProcessorError(
-                        f"Failed to delete existing package {software_title} {version} with mismatched hash"
+                    self.output(
+                        f"Warning: Could not delete existing package (may be in use). "
+                        f"Attempting upload anyway - Fleet may return 409 conflict."
                     )
+                # Continue to upload section below regardless of delete result
             else:
                 # Hashes match - skip upload
                 self.output(
