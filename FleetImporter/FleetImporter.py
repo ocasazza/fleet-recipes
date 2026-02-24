@@ -1593,7 +1593,18 @@ class FleetImporter(Processor):
         if display_name:
             data['display_name'] = display_name
 
-        # Write updated YAML
+        # Write updated YAML with verification
+        #
+        # IMPORTANT: This verification logging helps debug hash commit issues.
+        # Previous bug: CI artifact download/decompression failures caused stale
+        # hashes to be committed even though this write succeeded. The verification
+        # logs prove the correct hash was written here, allowing us to trace where
+        # the hash was lost in the CI artifact workflow.
+        #
+        # If hash commits fail but these logs show success, check:
+        # 1. CI artifact compression/decompression (.yml.gz handling)
+        # 2. YAML filename matches recipe name (gitops_software_filename)
+        # 3. Artifact upload/download endpoints and permissions
         try:
             with open(yaml_file_path, 'w') as f:
                 yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
@@ -1601,7 +1612,7 @@ class FleetImporter(Processor):
             self.output(f"DEBUG: File exists after write: {yaml_file_path.exists()}")
             self.output(f"DEBUG: File size: {yaml_file_path.stat().st_size if yaml_file_path.exists() else 0} bytes")
 
-            # Read back to verify
+            # Read back to verify hash was written correctly
             with open(yaml_file_path, 'r') as f:
                 verify_data = yaml.safe_load(f)
             self.output(f"DEBUG: Hash in written file (verification): {verify_data.get('hash_sha256', 'NOT FOUND')}")
