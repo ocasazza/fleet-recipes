@@ -1597,6 +1597,18 @@ class FleetImporter(Processor):
         try:
             with open(yaml_file_path, 'w') as f:
                 yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
+            self.output(f"DEBUG: YAML file written successfully to: {yaml_file_path}")
+            self.output(f"DEBUG: File exists after write: {yaml_file_path.exists()}")
+            self.output(f"DEBUG: File size: {yaml_file_path.stat().st_size if yaml_file_path.exists() else 0} bytes")
+
+            # Read back to verify
+            with open(yaml_file_path, 'r') as f:
+                verify_data = yaml.safe_load(f)
+            self.output(f"DEBUG: Hash in written file (verification): {verify_data.get('hash_sha256', 'NOT FOUND')}")
+            if verify_data.get('hash_sha256') == hash_sha256:
+                self.output("✓ YAML write verified - hash matches")
+            else:
+                self.output(f"✗ YAML write verification FAILED - Expected: {hash_sha256}, Got: {verify_data.get('hash_sha256')}")
         except Exception as e:
             raise ProcessorError(f"Failed to write YAML file {yaml_file_path}: {e}")
 
