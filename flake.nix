@@ -121,13 +121,13 @@
               mkdir -p $out
               # Copy all processors
               cp -r FleetImporter $out/
-              cp -r ChmodTool $out/
+              cp -r com.github.fleet.ChmodTool $out/
               cp -r ScriptInjector $out/
               cp -r ProductBuildCreator $out/
               cp -r FleetAgentBuilder $out/
               # Copy recipe directories (exclude hidden files, tests, etc)
               for dir in */; do
-                if [[ ! "$dir" =~ ^(\..*|tests|\.github|nix-darwin|FleetImporter|ChmodTool|ScriptInjector|ProductBuildCreator|FleetAgentBuilder)/ ]]; then
+                if [[ ! "$dir" =~ ^(\..*|tests|\.github|nix-darwin|FleetImporter|com.github.fleet.ChmodTool|ScriptInjector|ProductBuildCreator|FleetAgentBuilder)/ ]]; then
                   cp -r "$dir" $out/
                 fi
               done
