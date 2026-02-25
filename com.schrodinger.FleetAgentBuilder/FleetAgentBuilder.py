@@ -93,6 +93,15 @@ class FleetAgentBuilder(Processor):
         self.output(f"Running: {cmd[0]} {cmd[1] if cmd[0] == 'npx' else 'package'} --fleet-url=... --enroll-secret=***")
 
         try:
+            # Ensure common Unix utilities are in PATH for fleetctl
+            # fleetctl package needs find, cpio, and other utils
+            env = os.environ.copy()
+            # Add standard macOS utility paths
+            extra_paths = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+            current_path = env.get("PATH", "")
+            # Prepend extra paths to ensure they're found
+            env["PATH"] = ":".join(extra_paths + [current_path])
+
             # Run fleetctl package command
             result = subprocess.run(
                 cmd,
@@ -100,6 +109,7 @@ class FleetAgentBuilder(Processor):
                 capture_output=True,
                 text=True,
                 cwd=output_dir or ".",
+                env=env,
             )
 
             # fleetctl package creates fleet-osquery.pkg in the current directory
