@@ -46,6 +46,19 @@ FLEET_MINIMUM_VERSION = "4.74.0"
 FLEET_VERSION_TIMEOUT = 30
 FLEET_UPLOAD_TIMEOUT = 900  # 15 minutes for large packages
 
+# Custom YAML Dumper that uses double quotes for strings (prettier compatibility)
+class DoubleQuotedDumper(yaml.SafeDumper):
+    """Custom YAML dumper that uses double quotes for strings."""
+    pass
+
+def str_representer(dumper, data):
+    """Force double quotes for all strings."""
+    if '\n' in data:  # Multiline strings use literal style
+        return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='|')
+    return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='"')
+
+DoubleQuotedDumper.add_representer(str, str_representer)
+
 
 class FleetImporter(Processor):
     """
@@ -1607,7 +1620,7 @@ class FleetImporter(Processor):
         # 3. Artifact upload/download endpoints and permissions
         try:
             with open(yaml_file_path, 'w') as f:
-                yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
+                yaml.dump(data, f, Dumper=DoubleQuotedDumper, default_flow_style=False, sort_keys=False)
             self.output(f"DEBUG: YAML file written successfully to: {yaml_file_path}")
             self.output(f"DEBUG: File exists after write: {yaml_file_path.exists()}")
             self.output(f"DEBUG: File size: {yaml_file_path.stat().st_size if yaml_file_path.exists() else 0} bytes")
@@ -2612,7 +2625,7 @@ class FleetImporter(Processor):
             # Ensure parent directory exists
             yaml_path.parent.mkdir(parents=True, exist_ok=True)
             with open(yaml_path, "w") as f:
-                yaml.dump(data, f, default_flow_style=False, sort_keys=False, indent=2)
+                yaml.dump(data, f, Dumper=DoubleQuotedDumper, default_flow_style=False, sort_keys=False, indent=2)
         except (yaml.YAMLError, IOError) as e:
             raise ProcessorError(f"Failed to write YAML file {yaml_path}: {e}")
 
