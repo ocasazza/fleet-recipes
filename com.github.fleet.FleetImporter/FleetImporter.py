@@ -1610,7 +1610,7 @@ class FleetImporter(Processor):
         # 3. Artifact upload/download endpoints and permissions
         try:
             with open(yaml_file_path, 'w') as f:
-                yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
+                yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False, default_style='"')
             self.output(f"DEBUG: YAML file written successfully to: {yaml_file_path}")
             self.output(f"DEBUG: File exists after write: {yaml_file_path.exists()}")
             self.output(f"DEBUG: File size: {yaml_file_path.stat().st_size if yaml_file_path.exists() else 0} bytes")
@@ -2615,7 +2615,7 @@ class FleetImporter(Processor):
             # Ensure parent directory exists
             yaml_path.parent.mkdir(parents=True, exist_ok=True)
             with open(yaml_path, "w") as f:
-                yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False, indent=2)
+                yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False, indent=2, default_style='"')
         except (yaml.YAMLError, IOError) as e:
             raise ProcessorError(f"Failed to write YAML file {yaml_path}: {e}")
 
