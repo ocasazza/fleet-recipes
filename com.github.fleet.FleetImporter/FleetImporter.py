@@ -1019,6 +1019,15 @@ class FleetImporter(Processor):
                 platform=platform,
             )
 
+            # Update any policy files that install this software with the new hash
+            self.output(f"Checking for policies that install {software_title}...")
+            software_name = gitops_software_filename.replace('.yml', '')
+            self._update_policy_hashes(
+                gitops_software_dir,
+                software_name,
+                hash_sha256,
+            )
+
         # Upload icon if provided
         icon_path_str = self.env.get("icon", "").strip()
 
@@ -1625,6 +1634,116 @@ class FleetImporter(Processor):
                 self.output(f"✗ YAML write verification FAILED - Expected: {hash_sha256}, Got: {verify_data.get('hash_sha256')}")
         except Exception as e:
             raise ProcessorError(f"Failed to write YAML file {yaml_file_path}: {e}")
+
+    def _update_policy_hashes(
+        self,
+        gitops_software_dir: str,
+        software_name: str,
+        new_hash: str,
+    ):
+        """Update policy files that install this software with the new package hash.
+
+        Searches for policy files in lib/policies/*/install_software.hash_sha256
+        and updates them to reference the new package hash.
+
+        Args:
+            gitops_software_dir: Base GitOps directory path (e.g., /path/to/git-fleet/lib/software)
+            software_name: Name of the software package (e.g., "sentinelone")
+            new_hash: New SHA256 hash to write to policy files
+
+        Raises:
+            ProcessorError: If policy files cannot be updated
+        """
+        try:
+            import yaml
+        except ImportError:
+            self.output("Warning: PyYAML not available, skipping policy hash updates")
+            return
+
+        # Navigate up from software dir to find policies dir
+        # e.g., from /path/to/git-fleet/lib/software -> /path/to/git-fleet/lib/policies
+        software_path = Path(gitops_software_dir)
+        if not software_path.is_absolute():
+            software_path = software_path.resolve()
+
+        # Find git root by going up until we find lib/policies
+        repo_root = software_path.parent.parent  # /path/to/git-fleet
+        policies_dir = repo_root / "lib" / "policies" / "macos"
+
+        if not policies_dir.exists():
+            self.output(f"Policies directory not found: {policies_dir}")
+            self.output("Skipping policy hash updates")
+            return
+
+        self.output(f"Searching for policies to update in: {policies_dir}")
+
+        # Find all policy YAML files
+        policy_files = list(policies_dir.glob("*.yml"))
+        if not policy_files:
+            self.output("No policy files found")
+            return
+
+        updated_count = 0
+
+        for policy_file in policy_files:
+            try:
+                # Read policy file
+                with open(policy_file, 'r') as f:
+                    policy_data = yaml.safe_load(f)
+
+                if not policy_data or not isinstance(policy_data, list):
+                    continue
+
+                # Policy files are lists with a single policy object
+                if len(policy_data) == 0:
+                    continue
+
+                policy = policy_data[0]
+
+                # Check if this policy has install_software
+                if 'install_software' not in policy:
+                    continue
+
+                install_software = policy['install_software']
+                if 'hash_sha256' not in install_software:
+                    continue
+
+                old_hash = install_software['hash_sha256']
+
+                # Check if this policy references our software
+                # We can't reliably map policy names to software names without more context
+                # So we'll update ANY policy that currently points to the old hash from Fleet
+                # This is safer than trying to guess name mappings
+
+                # Actually, let's be smarter: check if the policy name contains the software name
+                policy_name = policy.get('name', '').lower()
+                if software_name.lower() not in policy_name:
+                    # Not related to this software
+                    continue
+
+                self.output(f"Found policy: {policy_file.name}")
+                self.output(f"  Current hash: {old_hash[:16]}...")
+
+                # Update the hash
+                install_software['hash_sha256'] = new_hash
+                policy['install_software'] = install_software
+                policy_data[0] = policy
+
+                # Write back to file
+                with open(policy_file, 'w') as f:
+                    yaml.safe_dump(policy_data, f, default_flow_style=False, sort_keys=False, default_style='"')
+
+                self.output(f"  ✓ Updated to: {new_hash[:16]}...")
+                updated_count += 1
+
+            except Exception as e:
+                self.output(f"Warning: Failed to update policy {policy_file.name}: {e}")
+                continue
+
+        if updated_count > 0:
+            self.output(f"✓ Updated {updated_count} policy file(s) with new hash")
+        else:
+            self.output("No policy files needed updating")
 
     def _slugify(self, text: str) -> str:
         """Convert text to a URL-safe slug.
