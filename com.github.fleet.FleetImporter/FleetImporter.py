@@ -1646,6 +1646,12 @@ class FleetImporter(Processor):
         Searches for policy files in lib/policies/*/install_software.hash_sha256
         and updates them to reference the new package hash.
 
+        Edge cases handled:
+        - Name variations (okta-verify-pkg -> okta-verify, sentinel-one -> sentinelone)
+        - Multiple policies for same software
+        - Cross-platform policy directories (macos, windows, linux)
+        - Non-standard policy formats (gracefully skipped)
+
         Args:
             gitops_software_dir: Base GitOps directory path (e.g., /path/to/git-fleet/lib/software)
             software_name: Name of the software package (e.g., "sentinelone")
@@ -1661,89 +1667,124 @@ class FleetImporter(Processor):
             return
 
         # Navigate up from software dir to find policies dir
-        # e.g., from /path/to/git-fleet/lib/software -> /path/to/git-fleet/lib/policies
         software_path = Path(gitops_software_dir)
         if not software_path.is_absolute():
             software_path = software_path.resolve()
 
         # Find git root by going up until we find lib/policies
         repo_root = software_path.parent.parent  # /path/to/git-fleet
-        policies_dir = repo_root / "lib" / "policies" / "macos"
+        policies_base_dir = repo_root / "lib" / "policies"
 
-        if not policies_dir.exists():
-            self.output(f"Policies directory not found: {policies_dir}")
+        if not policies_base_dir.exists():
+            self.output(f"Policies directory not found: {policies_base_dir}")
             self.output("Skipping policy hash updates")
             return
 
-        self.output(f"Searching for policies to update in: {policies_dir}")
+        # Normalize software name for matching (remove -pkg suffix, normalize separators)
+        normalized_name = software_name.lower()
+        normalized_name = normalized_name.replace('-pkg', '').replace('_', '').replace('-', '')
 
-        # Find all policy YAML files
-        policy_files = list(policies_dir.glob("*.yml"))
-        if not policy_files:
-            self.output("No policy files found")
-            return
+        self.output(f"Looking for policies matching: {software_name} (normalized: {normalized_name})")
 
-        updated_count = 0
+        # Search all platform subdirectories (macos, windows, linux)
+        platform_dirs = [d for d in policies_base_dir.iterdir() if d.is_dir()]
 
-        for policy_file in policy_files:
-            try:
-                # Read policy file
-                with open(policy_file, 'r') as f:
-                    policy_data = yaml.safe_load(f)
+        total_updated = 0
+        total_scanned = 0
 
-                if not policy_data or not isinstance(policy_data, list):
-                    continue
+        for platform_dir in platform_dirs:
+            platform_name = platform_dir.name
+            policy_files = list(platform_dir.glob("*.yml"))
 
-                # Policy files are lists with a single policy object
-                if len(policy_data) == 0:
-                    continue
-
-                policy = policy_data[0]
-
-                # Check if this policy has install_software
-                if 'install_software' not in policy:
-                    continue
-
-                install_software = policy['install_software']
-                if 'hash_sha256' not in install_software:
-                    continue
-
-                old_hash = install_software['hash_sha256']
-
-                # Check if this policy references our software
-                # We can't reliably map policy names to software names without more context
-                # So we'll update ANY policy that currently points to the old hash from Fleet
-                # This is safer than trying to guess name mappings
-
-                # Actually, let's be smarter: check if the policy name contains the software name
-                policy_name = policy.get('name', '').lower()
-                if software_name.lower() not in policy_name:
-                    # Not related to this software
-                    continue
-
-                self.output(f"Found policy: {policy_file.name}")
-                self.output(f"  Current hash: {old_hash[:16]}...")
-
-                # Update the hash
-                install_software['hash_sha256'] = new_hash
-                policy['install_software'] = install_software
-                policy_data[0] = policy
-
-                # Write back to file
-                with open(policy_file, 'w') as f:
-                    yaml.safe_dump(policy_data, f, default_flow_style=False, sort_keys=False, default_style='"')
-
-                self.output(f"  ✓ Updated to: {new_hash[:16]}...")
-                updated_count += 1
-
-            except Exception as e:
-                self.output(f"Warning: Failed to update policy {policy_file.name}: {e}")
+            if not policy_files:
                 continue
 
-        if updated_count > 0:
-            self.output(f"✓ Updated {updated_count} policy file(s) with new hash")
-        else:
-            self.output("No policy files needed updating")
+            self.output(f"Scanning {len(policy_files)} policies in {platform_name}/")
+
+            for policy_file in policy_files:
+                total_scanned += 1
+                try:
+                    # Read policy file
+                    with open(policy_file, 'r') as f:
+                        policy_data = yaml.safe_load(f)
+
+                    # Handle both list format and dict format
+                    if isinstance(policy_data, list):
+                        if len(policy_data) == 0:
+                            continue
+                        policy = policy_data[0]
+                    elif isinstance(policy_data, dict):
+                        policy = policy_data
+                    else:
+                        self.output(f"  Skipping {policy_file.name}: unexpected format")
+                        continue
+
+                    # Check if this policy has install_software
+                    if 'install_software' not in policy:
+                        continue
+
+                    install_software = policy['install_software']
+                    if 'hash_sha256' not in install_software:
+                        continue
+
+                    old_hash = install_software['hash_sha256']
+
+                    # Match policy to software using multiple strategies
+                    policy_name = policy.get('name', '').lower()
+                    policy_file_name = policy_file.stem.lower()
+
+                    # Normalize policy identifiers for matching
+                    norm_policy_name = policy_name.replace('-', '').replace('_', '').replace(' ', '')
+                    norm_file_name = policy_file_name.replace('-', '').replace('_', '')
+
+                    # Match if software name appears in policy name OR filename
+                    # Also match variations like "sentinel-one" <-> "sentinelone"
+                    name_match = (
+                        normalized_name in norm_policy_name or
+                        normalized_name in norm_file_name or
+                        software_name.lower() in policy_name or
+                        software_name.lower() in policy_file_name
+                    )
+
+                    if not name_match:
+                        continue
+
+                    self.output(f"  Found matching policy: {policy_file.name}")
+                    self.output(f"    Policy name: {policy.get('name', 'N/A')}")
+                    self.output(f"    Old hash: {old_hash[:16]}...")
+                    self.output(f"    New hash: {new_hash[:16]}...")
+
+                    # Only update if hash actually changed
+                    if old_hash == new_hash:
+                        self.output(f"    ⏭️  Hash unchanged, skipping")
+                        continue
+
+                    # Update the hash
+                    install_software['hash_sha256'] = new_hash
+
+                    # Update in the original structure
+                    if isinstance(policy_data, list):
+                        policy['install_software'] = install_software
+                        policy_data[0] = policy
+                    else:
+                        policy['install_software'] = install_software
+                        policy_data = policy
+
+                    # Write back to file
+                    with open(policy_file, 'w') as f:
+                        yaml.safe_dump(policy_data, f, default_flow_style=False, sort_keys=False, default_style='"')
+
+                    self.output(f"    ✅ Updated successfully")
+                    total_updated += 1
+
+                except Exception as e:
+                    self.output(f"  ⚠️  Failed to update {policy_file.name}: {e}")
+                    continue
+
+        self.output(f"Policy update summary: scanned {total_scanned} policies, updated {total_updated}")
+
+        if total_updated == 0 and total_scanned > 0:
+            self.output(f"ℹ️  No policies needed updating (this is normal if no policies install {software_name})")
 
     def _slugify(self, text: str) -> str:
         """Convert text to a URL-safe slug.
