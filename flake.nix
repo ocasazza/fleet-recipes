@@ -96,7 +96,7 @@
                   --prefix PYTHONPATH : "${pythonPackages.makePythonPath pythonDeps}"
               '';
 
-              nativeBuildInputs = [ pkgs.makeWrapper ];
+              nativeBuildInputs = [ pkgs.makeWrapper pkgs.perl ];
             };
         in
         {
