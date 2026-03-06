@@ -40,7 +40,7 @@
           # Build AutoPkg with Python dependencies
           autopkgDrv =
             let
-              python = pkgs.python311;
+              python = pkgs.python313;
               pythonPackages = python.pkgs;
               pythonDeps = with pythonPackages; [
                 appdirs
@@ -48,6 +48,7 @@
                 boto3
                 certifi
                 lxml
+                packaging
                 pyyaml
                 six
                 xattr
@@ -71,6 +72,14 @@
                 sed -i '/^import sys$/a import grp' Code/autopkgserver/autopkgserver
                 sed -i 's/admin_gid = 80$/&\n    try:\n        nixbld_gid = grp.getgrnam("nixbld").gr_gid\n    except KeyError:\n        nixbld_gid = None/' Code/autopkgserver/autopkgserver
                 sed -i 's/if info.st_gid not in (wheel_gid, admin_gid):/if info.st_gid not in (wheel_gid, admin_gid, nixbld_gid):/' Code/autopkgserver/autopkgserver
+
+                # Fix Python 3.13 compatibility - replace deprecated imp module with importlib
+                sed -i 's/^import imp$/import importlib.util/' Code/autopkglib/__init__.py
+                sed -i 's/_tmp = imp\.load_source(processor_name, processor_filename)/spec = importlib.util.spec_from_file_location(processor_name, processor_filename)\n                _tmp = importlib.util.module_from_spec(spec)\n                spec.loader.exec_module(_tmp)/' Code/autopkglib/__init__.py
+
+                # Fix Python 3.13 compatibility - replace deprecated distutils with packaging
+                sed -i 's/from distutils\.version import LooseVersion/from packaging.version import Version as LooseVersion/' Code/autopkglib/__init__.py
+                sed -i 's/from distutils\.version import StrictVersion/from packaging.version import Version as StrictVersion/' Code/autopkglib/CodeSignatureVerifier.py
               '';
 
               installPhase = ''
