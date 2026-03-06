@@ -74,12 +74,12 @@
                 sed -i 's/if info.st_gid not in (wheel_gid, admin_gid):/if info.st_gid not in (wheel_gid, admin_gid, nixbld_gid):/' Code/autopkgserver/autopkgserver
 
                 # Fix Python 3.13 compatibility - replace deprecated imp module with importlib
-                sed -i 's/^import imp$/import importlib.util/' Code/autopkglib/__init__.py
-                sed -i 's/_tmp = imp\.load_source(processor_name, processor_filename)/spec = importlib.util.spec_from_file_location(processor_name, processor_filename)\n                _tmp = importlib.util.module_from_spec(spec)\n                spec.loader.exec_module(_tmp)/' Code/autopkglib/__init__.py
+                perl -i -pe 's/^import imp$/import importlib.util/' Code/autopkglib/__init__.py
+                perl -i -pe 's/                    _tmp = imp\.load_source\(processor_name, processor_filename\)/                    spec = importlib.util.spec_from_file_location(processor_name, processor_filename)\n                    _tmp = importlib.util.module_from_spec(spec)\n                    spec.loader.exec_module(_tmp)/' Code/autopkglib/__init__.py
 
                 # Fix Python 3.13 compatibility - replace deprecated distutils with packaging
-                sed -i 's/from distutils\.version import LooseVersion/from packaging.version import Version as LooseVersion/' Code/autopkglib/__init__.py
-                sed -i 's/from distutils\.version import StrictVersion/from packaging.version import Version as StrictVersion/' Code/autopkglib/CodeSignatureVerifier.py
+                perl -i -pe 's/from distutils\.version import LooseVersion/from packaging.version import Version as LooseVersion/' Code/autopkglib/__init__.py
+                perl -i -pe 's/from distutils\.version import StrictVersion/from packaging.version import Version as StrictVersion/' Code/autopkglib/CodeSignatureVerifier.py
               '';
 
               installPhase = ''
