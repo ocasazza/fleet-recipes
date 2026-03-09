@@ -988,14 +988,23 @@ class FleetImporter(Processor):
         target_team_ids = []
 
         if discover_teams:
+            # Extract software name from YAML filename for team discovery
+            # Teams reference packages by YAML filename (e.g., "homebrew" from "homebrew.yml")
+            # NOT by software_title (which includes version and git hash)
+            if gitops_software_filename:
+                software_name = gitops_software_filename.replace('.yml', '').replace('.yaml', '')
+            else:
+                # Fallback: try to guess from software_title (remove version/hash patterns)
+                software_name = software_title.split()[0].lower()
+
             # Auto-discover teams from YAML files
-            self.output(f"Team discovery enabled. Scanning for teams that reference '{software_title}'...")
-            discovered_teams = self._discover_teams_for_package(software_title, teams_dir)
+            self.output(f"Team discovery enabled. Scanning for teams that reference package '{software_name}'...")
+            discovered_teams = self._discover_teams_for_package(software_name, teams_dir)
             target_team_ids = [t["team_id"] for t in discovered_teams if t["team_id"] is not None]
 
             if not target_team_ids:
                 self.output(
-                    f"Warning: Team discovery found no teams for '{software_title}'. "
+                    f"Warning: Team discovery found no teams for '{software_name}'. "
                     f"Falling back to team_id or team_ids if provided."
                 )
 
