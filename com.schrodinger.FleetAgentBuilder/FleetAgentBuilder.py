@@ -42,6 +42,11 @@ class FleetAgentBuilder(Processor):
             "description": "Path to fleetctl binary (default: fleetctl in PATH)",
             "default": "fleetctl",
         },
+        "sign_identity": {
+            "required": False,
+            "description": "Code signing identity for macOS (e.g., 'Developer ID Installer: Company Name')",
+            "default": "",
+        },
     }
     output_variables = {
         "fleet_agent_pkg": {
@@ -55,6 +60,7 @@ class FleetAgentBuilder(Processor):
         team_name = self.env["team_name"]
         output_path = self.env["output_path"]
         fleetctl_path = self.env.get("fleetctl_path", "fleetctl")
+        sign_identity = self.env.get("sign_identity", "")
 
         # Create output directory if needed
         output_dir = os.path.dirname(output_path)
@@ -89,6 +95,11 @@ class FleetAgentBuilder(Processor):
                 f"--fleet-desktop",
                 "--disable-open-folder",
             ]
+
+        # Add code signing if identity provided
+        if sign_identity:
+            cmd.append(f"--sign-identity={sign_identity}")
+            self.output(f"Signing with identity: {sign_identity}")
 
         self.output(f"Running: {cmd[0]} {cmd[1] if cmd[0] == 'npx' else 'package'} --fleet-url=... --enroll-secret=***")
 
