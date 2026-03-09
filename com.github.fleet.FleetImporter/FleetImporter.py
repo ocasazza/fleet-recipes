@@ -448,7 +448,11 @@ class FleetImporter(Processor):
 
                 # Check if this team has a software section
                 # Software can be at root level or under software.packages
-                software_section = team_data.get('software', {})
+                software_section = team_data.get('software')
+                if not software_section:
+                    # No software section at all
+                    continue
+
                 if isinstance(software_section, list):
                     # Backward compatibility: software as list
                     software_list = software_section
@@ -456,7 +460,8 @@ class FleetImporter(Processor):
                 elif isinstance(software_section, dict):
                     # New format: software.packages subsection
                     software_list = software_section.get('packages', [])
-                    self.output(f"  [{yaml_file.name}] Found software.packages with {len(software_list)} items")
+                    if software_list:
+                        self.output(f"  [{yaml_file.name}] Found software.packages with {len(software_list)} items")
                 else:
                     continue
 
