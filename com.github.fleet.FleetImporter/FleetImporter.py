@@ -370,17 +370,20 @@ class FleetImporter(Processor):
         raise ProcessorError(f"Request failed after {max_retries} retries: {last_error}")
 
     def _discover_teams_for_package(
-        self, software_name: str, teams_dir: str = None
+        self, software_name: str, teams_dir: str = None, fleet_api_base: str = None, fleet_token: str = None
     ) -> list[dict]:
         """
         Discover which teams reference a software package in their YAML files.
 
         Scans team YAML files to find all teams that include the specified
-        software package in their configuration.
+        software package in their configuration. Team IDs are looked up from
+        Fleet API using team names.
 
         Args:
             software_name: Name of the software package (e.g., "sentinelone")
             teams_dir: Path to teams directory (defaults to ./teams in repo root)
+            fleet_api_base: Fleet API base URL (for looking up team IDs)
+            fleet_token: Fleet API token (for looking up team IDs)
 
         Returns:
             List of dicts with team info: [{"file": "it-ops-general.yml", "team_id": 26, "name": "IT Ops General"}, ...]
@@ -410,6 +413,25 @@ class FleetImporter(Processor):
         if not teams_dir.exists():
             self.output(f"Warning: Teams directory does not exist: {teams_dir}")
             return []
+
+        # Fetch team ID mapping from Fleet API if credentials provided
+        team_name_to_id = {}
+        if fleet_api_base and fleet_token:
+            try:
+                url = f"{fleet_api_base}/api/v1/fleet/teams"
+                headers = {
+                    "Authorization": f"Bearer {fleet_token}",
+                    "Accept": "application/json",
+                }
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, timeout=30, context=self._get_ssl_context()) as resp:
+                    if resp.getcode() == 200:
+                        data = json.loads(resp.read().decode())
+                        teams = data.get("teams", [])
+                        team_name_to_id = {t["name"]: t["id"] for t in teams}
+                        self.output(f"Fetched {len(team_name_to_id)} teams from Fleet API for ID lookup")
+            except Exception as e:
+                self.output(f"Warning: Could not fetch teams from Fleet API: {e}. Team IDs will be null.")
 
         teams_with_package = []
 
@@ -461,10 +483,13 @@ class FleetImporter(Processor):
 
                     if sw_name == software_name:
                         # Found a match! Extract team info
+                        team_name = team_data.get('name', yaml_file.stem)
+                        team_id = team_name_to_id.get(team_name)  # Lookup from Fleet API
+
                         team_info = {
                             "file": yaml_file.name,
-                            "team_id": team_data.get('team_id'),
-                            "name": team_data.get('name', yaml_file.stem),
+                            "team_id": team_id,
+                            "name": team_name,
                         }
                         teams_with_package.append(team_info)
                         self.output(
@@ -1020,7 +1045,12 @@ class FleetImporter(Processor):
 
             # Auto-discover teams from YAML files
             self.output(f"Team discovery enabled. Scanning for teams that reference package '{software_name}'...")
-            discovered_teams = self._discover_teams_for_package(software_name, teams_dir)
+            discovered_teams = self._discover_teams_for_package(
+                software_name,
+                teams_dir,
+                fleet_api_base=fleet_api_base,
+                fleet_token=fleet_token
+            )
             target_team_ids = [t["team_id"] for t in discovered_teams if t["team_id"] is not None]
 
             if not target_team_ids:
