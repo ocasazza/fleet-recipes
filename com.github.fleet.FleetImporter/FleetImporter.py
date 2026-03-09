@@ -415,6 +415,7 @@ class FleetImporter(Processor):
 
         # Scan all YAML files in teams directory
         yaml_files = list(teams_dir.glob("*.yml")) + list(teams_dir.glob("*.yaml"))
+        self.output(f"Scanning {len(yaml_files)} team YAML files in {teams_dir}...")
         for yaml_file in yaml_files:
             try:
                 with open(yaml_file, 'r') as f:
@@ -429,9 +430,11 @@ class FleetImporter(Processor):
                 if isinstance(software_section, list):
                     # Backward compatibility: software as list
                     software_list = software_section
+                    self.output(f"  [{yaml_file.name}] Found software list (legacy format) with {len(software_list)} items")
                 elif isinstance(software_section, dict):
                     # New format: software.packages subsection
                     software_list = software_section.get('packages', [])
+                    self.output(f"  [{yaml_file.name}] Found software.packages with {len(software_list)} items")
                 else:
                     continue
 
@@ -439,7 +442,7 @@ class FleetImporter(Processor):
                     continue
 
                 # Check if our software package is in the list
-                for software_item in software_list:
+                for idx, software_item in enumerate(software_list):
                     # Software items can be strings, dicts with 'name', or dicts with 'path'
                     if isinstance(software_item, str):
                         sw_name = software_item
@@ -451,6 +454,8 @@ class FleetImporter(Processor):
                             # Extract filename from path: ../lib/software/homebrew/macos/homebrew.yml -> homebrew
                             path = software_item['path']
                             sw_name = Path(path).stem  # Gets filename without extension
+                            if idx == 0:  # Only log first item to avoid spam
+                                self.output(f"  [{yaml_file.name}] Extracted '{sw_name}' from path: {path}")
                     else:
                         continue
 
