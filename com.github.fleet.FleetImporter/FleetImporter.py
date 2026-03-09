@@ -22,6 +22,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import certifi
@@ -95,7 +96,20 @@ class FleetImporter(Processor):
         },
         "team_id": {
             "required": False,
-            "description": "Fleet team ID to attach the uploaded package to (required for direct mode).",
+            "description": "Fleet team ID to attach the uploaded package to (required for direct mode, unless team_ids or discover_teams is used).",
+        },
+        "team_ids": {
+            "required": False,
+            "description": "List of Fleet team IDs for multi-team upload (alternative to team_id). Package will be uploaded to all specified teams in parallel.",
+        },
+        "discover_teams": {
+            "required": False,
+            "default": False,
+            "description": "Auto-discover teams from YAML files. If enabled, will scan teams directory to find all teams that reference this software package.",
+        },
+        "teams_dir": {
+            "required": False,
+            "description": "Path to teams directory for team discovery (defaults to ./teams or git-root/teams).",
         },
         # --- GitOps mode ---
         "gitops_mode": {
@@ -255,6 +269,331 @@ class FleetImporter(Processor):
     def _get_ssl_context(self):
         """Create an SSL context using certifi's CA bundle."""
         return ssl.create_default_context(cafile=certifi.where())
+
+    def _fleet_api_request_with_retry(
+        self,
+        request: urllib.request.Request,
+        timeout: int = 30,
+        max_retries: int = 5,
+        backoff_factor: float = 2.0,
+        initial_delay: float = 1.0,
+    ):
+        """
+        Execute a Fleet API request with exponential backoff for rate limiting.
+
+        Handles 429 (Too Many Requests) responses with automatic retry using
+        exponential backoff. Also retries on network errors and 5xx server errors.
+
+        Args:
+            request: urllib.request.Request object
+            timeout: Request timeout in seconds
+            max_retries: Maximum number of retry attempts
+            backoff_factor: Multiplier for exponential backoff
+            initial_delay: Initial delay in seconds before first retry
+
+        Returns:
+            urllib response object
+
+        Raises:
+            ProcessorError: If all retries are exhausted
+        """
+        last_error = None
+        delay = initial_delay
+
+        for attempt in range(max_retries + 1):  # +1 for initial attempt
+            try:
+                response = urllib.request.urlopen(
+                    request, timeout=timeout, context=self._get_ssl_context()
+                )
+                return response
+
+            except urllib.error.HTTPError as e:
+                last_error = e
+
+                # Handle rate limiting (429) with retry
+                if e.code == 429:
+                    if attempt < max_retries:
+                        # Check for Retry-After header
+                        retry_after = e.headers.get('Retry-After')
+                        if retry_after:
+                            try:
+                                delay = float(retry_after)
+                            except ValueError:
+                                pass  # Use exponential backoff instead
+
+                        self.output(
+                            f"Rate limit hit (429). Retrying in {delay:.1f}s "
+                            f"(attempt {attempt + 1}/{max_retries})..."
+                        )
+                        time.sleep(delay)
+                        delay *= backoff_factor
+                        continue
+                    else:
+                        raise ProcessorError(
+                            f"Rate limit exceeded after {max_retries} retries: {e.code} {e.read().decode()}"
+                        )
+
+                # Handle server errors (5xx) with retry
+                elif 500 <= e.code < 600:
+                    if attempt < max_retries:
+                        self.output(
+                            f"Server error ({e.code}). Retrying in {delay:.1f}s "
+                            f"(attempt {attempt + 1}/{max_retries})..."
+                        )
+                        time.sleep(delay)
+                        delay *= backoff_factor
+                        continue
+                    else:
+                        raise ProcessorError(
+                            f"Server error after {max_retries} retries: {e.code} {e.read().decode()}"
+                        )
+
+                # Don't retry on other HTTP errors (4xx except 429)
+                raise
+
+            except (urllib.error.URLError, OSError) as e:
+                last_error = e
+                if attempt < max_retries:
+                    self.output(
+                        f"Network error: {e}. Retrying in {delay:.1f}s "
+                        f"(attempt {attempt + 1}/{max_retries})..."
+                    )
+                    time.sleep(delay)
+                    delay *= backoff_factor
+                    continue
+                else:
+                    raise ProcessorError(
+                        f"Network error after {max_retries} retries: {e}"
+                    )
+
+        # Should never reach here, but just in case
+        raise ProcessorError(f"Request failed after {max_retries} retries: {last_error}")
+
+    def _discover_teams_for_package(
+        self, software_name: str, teams_dir: str = None
+    ) -> list[dict]:
+        """
+        Discover which teams reference a software package in their YAML files.
+
+        Scans team YAML files to find all teams that include the specified
+        software package in their configuration.
+
+        Args:
+            software_name: Name of the software package (e.g., "sentinelone")
+            teams_dir: Path to teams directory (defaults to ./teams in repo root)
+
+        Returns:
+            List of dicts with team info: [{"file": "it-ops-general.yml", "team_id": 26, "name": "IT Ops General"}, ...]
+        """
+        if not teams_dir:
+            # Try to find teams directory relative to current working directory
+            teams_dir = Path.cwd() / "teams"
+            if not teams_dir.exists():
+                # Try git root
+                try:
+                    git_root = subprocess.run(
+                        ["git", "rev-parse", "--show-toplevel"],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL,
+                        text=True,
+                        check=True
+                    ).stdout.strip()
+                    teams_dir = Path(git_root) / "teams"
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    self.output(
+                        f"Warning: Could not find teams directory. "
+                        f"Tried: {Path.cwd() / 'teams'}"
+                    )
+                    return []
+
+        teams_dir = Path(teams_dir)
+        if not teams_dir.exists():
+            self.output(f"Warning: Teams directory does not exist: {teams_dir}")
+            return []
+
+        teams_with_package = []
+
+        # Scan all YAML files in teams directory
+        yaml_files = list(teams_dir.glob("*.yml")) + list(teams_dir.glob("*.yaml"))
+        for yaml_file in yaml_files:
+            try:
+                with open(yaml_file, 'r') as f:
+                    team_data = yaml.safe_load(f)
+
+                if not team_data:
+                    continue
+
+                # Check if this team has a software section
+                software_list = team_data.get('software', [])
+                if not software_list:
+                    continue
+
+                # Check if our software package is in the list
+                for software_item in software_list:
+                    # Software items can be strings or dicts
+                    if isinstance(software_item, str):
+                        sw_name = software_item
+                    elif isinstance(software_item, dict):
+                        sw_name = software_item.get('name', '')
+                    else:
+                        continue
+
+                    if sw_name == software_name:
+                        # Found a match! Extract team info
+                        team_info = {
+                            "file": yaml_file.name,
+                            "team_id": team_data.get('team_id'),
+                            "name": team_data.get('name', yaml_file.stem),
+                        }
+                        teams_with_package.append(team_info)
+                        self.output(
+                            f"Found {software_name} in team: {team_info['name']} "
+                            f"(ID: {team_info['team_id']}, file: {team_info['file']})"
+                        )
+                        break  # Found it in this team, move to next file
+
+            except Exception as e:
+                self.output(
+                    f"Warning: Failed to parse team file {yaml_file.name}: {e}"
+                )
+                continue
+
+        if not teams_with_package:
+            self.output(
+                f"Warning: No teams found referencing package '{software_name}'. "
+                f"Searched in: {teams_dir}"
+            )
+        else:
+            self.output(
+                f"Discovered {len(teams_with_package)} team(s) referencing {software_name}"
+            )
+
+        return teams_with_package
+
+    def _upload_package_to_teams(
+        self,
+        base_url: str,
+        token: str,
+        pkg_path: Path,
+        software_title: str,
+        version: str,
+        team_ids: list[int],
+        self_service: bool,
+        automatic_install: bool,
+        labels_include_any: list[str],
+        labels_exclude_any: list[str],
+        install_script: str,
+        uninstall_script: str,
+        pre_install_query: str,
+        post_install_script: str,
+        categories: list[str],
+        display_name: str = "",
+        max_workers: int = 4,
+    ) -> dict[int, dict]:
+        """
+        Upload a package to multiple teams in parallel with rate limit handling.
+
+        Args:
+            base_url: Fleet base URL
+            token: Fleet API token
+            pkg_path: Path to the package file
+            software_title: Software title name
+            version: Software version
+            team_ids: List of team IDs to upload to
+            self_service: Enable self-service installation
+            automatic_install: Enable automatic installation
+            labels_include_any: Labels to include
+            labels_exclude_any: Labels to exclude
+            install_script: Installation script
+            uninstall_script: Uninstallation script
+            pre_install_query: Pre-installation query
+            post_install_script: Post-installation script
+            categories: Software categories
+            display_name: Display name for the software
+            max_workers: Maximum number of concurrent uploads (default: 4)
+
+        Returns:
+            Dict mapping team_id to upload response: {team_id: response_dict, ...}
+        """
+        if not team_ids:
+            self.output("Warning: No team IDs provided for upload")
+            return {}
+
+        self.output(
+            f"Starting parallel upload to {len(team_ids)} team(s): {team_ids}"
+        )
+
+        results = {}
+        errors = {}
+
+        def upload_to_team(team_id: int) -> tuple[int, dict]:
+            """Upload package to a single team."""
+            try:
+                self.output(f"[Team {team_id}] Starting upload...")
+                response = self._fleet_upload_package(
+                    base_url=base_url,
+                    token=token,
+                    pkg_path=pkg_path,
+                    software_title=software_title,
+                    version=version,
+                    team_id=team_id,
+                    self_service=self_service,
+                    automatic_install=automatic_install,
+                    labels_include_any=labels_include_any,
+                    labels_exclude_any=labels_exclude_any,
+                    install_script=install_script,
+                    uninstall_script=uninstall_script,
+                    pre_install_query=pre_install_query,
+                    post_install_script=post_install_script,
+                    categories=categories,
+                    display_name=display_name,
+                )
+                self.output(f"[Team {team_id}] ✅ Upload successful")
+                return (team_id, response)
+            except Exception as e:
+                error_msg = str(e)
+                self.output(f"[Team {team_id}] ❌ Upload failed: {error_msg}")
+                return (team_id, {"error": error_msg})
+
+        # Execute uploads in parallel with thread pool
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all upload tasks
+            future_to_team = {
+                executor.submit(upload_to_team, team_id): team_id
+                for team_id in team_ids
+            }
+
+            # Collect results as they complete
+            for future in as_completed(future_to_team):
+                team_id, response = future.result()
+                if "error" in response:
+                    errors[team_id] = response["error"]
+                else:
+                    results[team_id] = response
+
+        # Summary
+        success_count = len(results)
+        failure_count = len(errors)
+
+        if success_count > 0:
+            self.output(
+                f"✅ Successfully uploaded to {success_count} team(s): {list(results.keys())}"
+            )
+
+        if failure_count > 0:
+            self.output(
+                f"❌ Failed to upload to {failure_count} team(s): {list(errors.keys())}"
+            )
+            for team_id, error in errors.items():
+                self.output(f"  Team {team_id}: {error}")
+
+            # Raise error if all uploads failed
+            if failure_count == len(team_ids):
+                raise ProcessorError(
+                    f"All team uploads failed. Errors: {json.dumps(errors, indent=2)}"
+                )
+
+        return results
 
     def _build_version_query(
         self, version: str, query_template: str = None, bundle_id: str = None
@@ -641,15 +980,60 @@ class FleetImporter(Processor):
         fleet_api_base = self.env.get("fleet_api_base")
         fleet_token = self.env.get("fleet_api_token")
         team_id = self.env.get("team_id")
+        team_ids = self.env.get("team_ids")
+        discover_teams = self._parse_bool(self.env.get("discover_teams", False))
+        teams_dir = self.env.get("teams_dir")
 
-        if not dry_run and not all([fleet_api_base, fleet_token, team_id]):
+        # Multi-team support: Determine which teams to upload to
+        target_team_ids = []
+
+        if discover_teams:
+            # Auto-discover teams from YAML files
+            self.output(f"Team discovery enabled. Scanning for teams that reference '{software_title}'...")
+            discovered_teams = self._discover_teams_for_package(software_title, teams_dir)
+            target_team_ids = [t["team_id"] for t in discovered_teams if t["team_id"] is not None]
+
+            if not target_team_ids:
+                self.output(
+                    f"Warning: Team discovery found no teams for '{software_title}'. "
+                    f"Falling back to team_id or team_ids if provided."
+                )
+
+        if team_ids:
+            # Explicit list of team IDs provided
+            if isinstance(team_ids, (list, tuple)):
+                explicit_teams = [int(tid) for tid in team_ids]
+            else:
+                # Single team ID passed as team_ids
+                explicit_teams = [int(team_ids)]
+
+            # Merge with discovered teams if any
+            target_team_ids = list(set(target_team_ids + explicit_teams))
+
+        if not target_team_ids and team_id:
+            # Fall back to single team_id
+            target_team_ids = [int(team_id)]
+
+        # Validate we have at least one team
+        if not dry_run and not all([fleet_api_base, fleet_token]):
             raise ProcessorError(
-                "Direct mode requires: fleet_api_base, fleet_api_token, and team_id. "
+                "Direct mode requires: fleet_api_base and fleet_api_token. "
                 "These can be set via recipe Input variables or AutoPkg preferences:\n"
                 "  defaults write com.github.autopkg FLEET_API_BASE 'https://fleet.example.com'\n"
-                "  defaults write com.github.autopkg FLEET_API_TOKEN 'your-token'\n"
-                "  defaults write com.github.autopkg FLEET_TEAM_ID '1'"
+                "  defaults write com.github.autopkg FLEET_API_TOKEN 'your-token'"
             )
+
+        if not dry_run and not target_team_ids:
+            raise ProcessorError(
+                "Direct mode requires at least one team. Provide one of:\n"
+                "  - team_id: Single team ID\n"
+                "  - team_ids: List of team IDs\n"
+                "  - discover_teams: true (auto-discover from YAML files)\n"
+                "Example: defaults write com.github.autopkg FLEET_TEAM_ID '1'"
+            )
+
+        # Use first team as primary for legacy single-team operations
+        team_id = target_team_ids[0] if target_team_ids else None
 
         # Dry run mode: calculate hash and exit early
         if dry_run:
@@ -911,6 +1295,12 @@ class FleetImporter(Processor):
         # Upload to Fleet
         if package_type == "bootstrap":
             # Bootstrap packages use different endpoint and don't support deployment options
+            # Bootstrap packages don't support multi-team upload yet
+            if len(target_team_ids) > 1:
+                self.output(
+                    f"Warning: Bootstrap packages only support single team upload. "
+                    f"Using first team: {target_team_ids[0]}"
+                )
             self.output("Uploading bootstrap package to Fleet...")
             upload_info = self._fleet_upload_bootstrap(
                 fleet_api_base,
@@ -920,25 +1310,104 @@ class FleetImporter(Processor):
             )
         else:
             # Regular software package upload
-            self.output("Uploading package to Fleet...")
-            upload_info = self._fleet_upload_package(
-                fleet_api_base,
-                fleet_token,
-                pkg_path,
-                software_title,
-                version,
-                team_id,
-                self_service,
-                automatic_install,
-                labels_include_any,
-                labels_exclude_any,
-                install_script,
-                uninstall_script,
-                pre_install_query,
-                post_install_script,
-                categories,
-                display_name,
-            )
+            if len(target_team_ids) > 1:
+                # Multi-team upload with parallel execution
+                self.output(f"Uploading package to {len(target_team_ids)} teams in parallel...")
+                upload_results = self._upload_package_to_teams(
+                    base_url=fleet_api_base,
+                    token=fleet_token,
+                    pkg_path=pkg_path,
+                    software_title=software_title,
+                    version=version,
+                    team_ids=target_team_ids,
+                    self_service=self_service,
+                    automatic_install=automatic_install,
+                    labels_include_any=labels_include_any,
+                    labels_exclude_any=labels_exclude_any,
+                    install_script=install_script,
+                    uninstall_script=uninstall_script,
+                    pre_install_query=pre_install_query,
+                    post_install_script=post_install_script,
+                    categories=categories,
+                    display_name=display_name,
+                )
+
+                # Summarize upload results
+                successful_teams = []
+                failed_teams = []
+                for team_id_key, result in upload_results.items():
+                    if result and "error" not in result:
+                        successful_teams.append((team_id_key, result))
+                    else:
+                        error_msg = result.get("error", "Unknown error") if result else "No response"
+                        failed_teams.append((team_id_key, error_msg))
+
+                # Log summary
+                self.output(f"\n{'='*60}")
+                self.output(f"Multi-team upload summary:")
+                self.output(f"  Total teams: {len(upload_results)}")
+                self.output(f"  Successful: {len(successful_teams)} - Team IDs: {[t[0] for t in successful_teams]}")
+                self.output(f"  Failed: {len(failed_teams)}")
+                if failed_teams:
+                    for team_id_key, error_msg in failed_teams:
+                        self.output(f"    Team {team_id_key}: {error_msg}")
+                self.output(f"{'='*60}\n")
+
+                if not successful_teams:
+                    raise ProcessorError("All team uploads failed")
+
+                # Update display_name for all successful teams
+                if display_name and display_name.strip():
+                    self.output(f"Updating display_name for {len(successful_teams)} successful team(s)...")
+                    for team_id_key, result in successful_teams:
+                        software_package = result.get("software_package", {})
+                        title_id = software_package.get("title_id")
+                        if title_id:
+                            try:
+                                self.output(f"  [Team {team_id_key}] Updating display_name for title ID {title_id}...")
+                                self._fleet_update_display_name(
+                                    fleet_api_base,
+                                    fleet_token,
+                                    title_id,
+                                    team_id_key,
+                                    display_name,
+                                )
+                                self.output(f"  [Team {team_id_key}] ✅ Display name updated successfully")
+                            except Exception as e:
+                                self.output(
+                                    f"  [Team {team_id_key}] ⚠️  Warning: Failed to update display name: {e}"
+                                )
+                        else:
+                            self.output(f"  [Team {team_id_key}] ⚠️  Warning: No title_id in upload response, skipping display_name update")
+
+                # Use first successful upload for output variables
+                upload_info = successful_teams[0][1]
+                successful_team_id = successful_teams[0][0]
+                self.output(f"Using upload result from team {successful_team_id} for output variables")
+
+                # Update team_id to the successful upload's team for subsequent queries
+                team_id = successful_team_id
+            else:
+                # Single team upload (legacy path)
+                self.output("Uploading package to Fleet...")
+                upload_info = self._fleet_upload_package(
+                    fleet_api_base,
+                    fleet_token,
+                    pkg_path,
+                    software_title,
+                    version,
+                    team_id,
+                    self_service,
+                    automatic_install,
+                    labels_include_any,
+                    labels_exclude_any,
+                    install_script,
+                    uninstall_script,
+                    pre_install_query,
+                    post_install_script,
+                    categories,
+                    display_name,
+                )
 
         if upload_info is None:
             raise ProcessorError("Fleet package upload failed; no data returned")
@@ -3622,11 +4091,27 @@ This PR was automatically generated by the FleetImporter AutoPkg processor.
                                             }
                                         }
 
-                            self.output("Warning: Could not find existing package in Fleet. Continuing anyway...")
-                            return {}
+                            self.output("Warning: Could not find existing package in Fleet search results.")
 
                     except Exception as query_err:
-                        self.output(f"Warning: Could not query existing package: {query_err}. Continuing anyway...")
+                        self.output(f"Warning: Could not query existing package: {query_err}.")
+
+                    # Fallback: Calculate hash from local file
+                    # This ensures YAML gets updated even when Fleet query fails
+                    self.output("Calculating hash from local package file as fallback...")
+                    try:
+                        local_hash = self._calculate_file_sha256(pkg_path)
+                        self.output(f"Calculated local hash: {local_hash[:16]}...")
+                        return {
+                            "software_package": {
+                                "title_id": None,  # Unknown since upload failed
+                                "hash_sha256": local_hash,
+                                "version": version,
+                                "name": software_title,
+                            }
+                        }
+                    except Exception as hash_err:
+                        self.output(f"Error calculating local hash: {hash_err}")
                         return {}
             raise ProcessorError(f"Fleet upload failed: {e.code} {e.read().decode()}")
         if status != 200:
