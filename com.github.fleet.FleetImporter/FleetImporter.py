@@ -424,17 +424,33 @@ class FleetImporter(Processor):
                     continue
 
                 # Check if this team has a software section
-                software_list = team_data.get('software', [])
+                # Software can be at root level or under software.packages
+                software_section = team_data.get('software', {})
+                if isinstance(software_section, list):
+                    # Backward compatibility: software as list
+                    software_list = software_section
+                elif isinstance(software_section, dict):
+                    # New format: software.packages subsection
+                    software_list = software_section.get('packages', [])
+                else:
+                    continue
+
                 if not software_list:
                     continue
 
                 # Check if our software package is in the list
                 for software_item in software_list:
-                    # Software items can be strings or dicts
+                    # Software items can be strings, dicts with 'name', or dicts with 'path'
                     if isinstance(software_item, str):
                         sw_name = software_item
                     elif isinstance(software_item, dict):
+                        # Try 'name' field first
                         sw_name = software_item.get('name', '')
+                        # If no 'name', extract from 'path' field
+                        if not sw_name and 'path' in software_item:
+                            # Extract filename from path: ../lib/software/homebrew/macos/homebrew.yml -> homebrew
+                            path = software_item['path']
+                            sw_name = Path(path).stem  # Gets filename without extension
                     else:
                         continue
 
