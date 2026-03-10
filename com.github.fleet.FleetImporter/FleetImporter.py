@@ -1493,7 +1493,6 @@ class FleetImporter(Processor):
                 hash_sha256,
                 version,
                 package_url=None,  # No URL in Fleet API mode
-                software_title_id=title_id,
                 display_name=display_name,
                 software_title=software_title,
                 platform=platform,
@@ -2028,7 +2027,6 @@ class FleetImporter(Processor):
         hash_sha256: str,
         version: str,
         package_url: str = None,
-        software_title_id: int = None,
         display_name: str = "",
         software_title: str = "",
         platform: str = "",
@@ -2038,7 +2036,6 @@ class FleetImporter(Processor):
         Args:
             yaml_file_path: Path to the software YAML file
             hash_sha256: SHA256 hash of the package
-            software_title_id: Fleet software title ID (optional)
             version: Package version
             package_url: URL of the package (optional, only written if provided)
             display_name: Optional display name for Fleet UI
@@ -2086,10 +2083,6 @@ class FleetImporter(Processor):
         # Add display_name if provided
         if display_name:
             data['display_name'] = display_name
-            
-        # Add software_title_id if provided
-        if software_title_id:
-            data['software_title_id'] = software_title_id
 
         # Write updated YAML with verification
         #
