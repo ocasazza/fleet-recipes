@@ -1374,143 +1374,50 @@ class FleetImporter(Processor):
                 team_id,
             )
         else:
-            # Regular software package upload
+            # Regular software package upload - upload once to "No team" (team_id=0)
+            # and let teams reference by hash
             if len(target_team_ids) > 1:
-                # Multi-team upload with parallel execution
-                self.output(f"Uploading package to {len(target_team_ids)} teams in parallel...")
-                upload_results = self._upload_package_to_teams(
-                    base_url=fleet_api_base,
-                    token=fleet_token,
-                    pkg_path=pkg_path,
-                    software_title=software_title,
-                    version=version,
-                    team_ids=target_team_ids,
-                    self_service=self_service,
-                    automatic_install=automatic_install,
-                    labels_include_any=labels_include_any,
-                    labels_exclude_any=labels_exclude_any,
-                    install_script=install_script,
-                    uninstall_script=uninstall_script,
-                    pre_install_query=pre_install_query,
-                    post_install_script=post_install_script,
-                    categories=categories,
-                    display_name=display_name,
+                self.output(
+                    f"Package is referenced by {len(target_team_ids)} team(s): {target_team_ids}"
+                )
+                self.output(
+                    "Uploading once to 'No team' (team_id=0) to be shared across teams..."
+                )
+                # Override team_id to 0 for single shared upload
+                team_id = 0
+
+            # Single team upload (either requested team or team_id=0 for sharing)
+            self.output(f"Uploading package to team {team_id}...")
+            upload_info = self._fleet_upload_package(
+                fleet_api_base,
+                fleet_token,
+                pkg_path,
+                software_title,
+                version,
+                team_id,
+                self_service,
+                automatic_install,
+                labels_include_any,
+                labels_exclude_any,
+                install_script,
+                uninstall_script,
+                pre_install_query,
+                post_install_script,
+                categories,
+                display_name,
+            )
+
+            # Store the upload result for hash extraction
+            software_package = upload_info.get("software_package", {})
+            title_id = software_package.get("title_id")
+            hash_sha256 = software_package.get("hash_sha256")
+
+            if not title_id or not hash_sha256:
+                raise ProcessorError(
+                    f"Upload to team {team_id} failed: missing title_id or hash_sha256 in response"
                 )
 
-                # Summarize upload results
-                successful_teams = []
-                failed_teams = []
-                for team_id_key, result in upload_results.items():
-                    if result and "error" not in result:
-                        # Validate that upload response has required fields
-                        software_package = result.get("software_package", {})
-                        title_id = software_package.get("title_id")
-                        hash_sha256 = software_package.get("hash_sha256")
-
-                        if title_id and hash_sha256:
-                            successful_teams.append((team_id_key, result))
-                        elif hash_sha256 and not title_id:
-                            # Package uploaded but response missing title_id (likely already exists)
-                            # Query Fleet to find the title_id by hash
-                            self.output(f"  [Team {team_id_key}] Upload succeeded but missing title_id, querying Fleet...")
-                            try:
-                                existing_pkg = self._fleet_find_package_by_hash(
-                                    fleet_api_base,
-                                    fleet_token,
-                                    software_title,
-                                    version,
-                                    hash_sha256,
-                                    team_id_key,
-                                )
-                                if existing_pkg and existing_pkg.get("title_id"):
-                                    # Found it! Add title_id to result
-                                    result["software_package"]["title_id"] = existing_pkg["title_id"]
-                                    successful_teams.append((team_id_key, result))
-                                    self.output(f"  [Team {team_id_key}] ✅ Found title_id: {existing_pkg['title_id']}")
-                                else:
-                                    error_msg = "Upload succeeded but cannot find title_id in Fleet"
-                                    failed_teams.append((team_id_key, error_msg))
-                            except Exception as e:
-                                error_msg = f"Upload succeeded but failed to query Fleet for title_id: {e}"
-                                failed_teams.append((team_id_key, error_msg))
-                        else:
-                            missing_fields = []
-                            if not title_id:
-                                missing_fields.append("title_id")
-                            if not hash_sha256:
-                                missing_fields.append("hash_sha256")
-                            error_msg = f"Upload response missing required fields: {', '.join(missing_fields)}"
-                            failed_teams.append((team_id_key, error_msg))
-                    else:
-                        error_msg = result.get("error", "Unknown error") if result else "No response"
-                        failed_teams.append((team_id_key, error_msg))
-
-                # Log summary
-                self.output(f"\n{'='*60}")
-                self.output(f"Multi-team upload summary:")
-                self.output(f"  Total teams: {len(upload_results)}")
-                self.output(f"  Successful: {len(successful_teams)} - Team IDs: {[t[0] for t in successful_teams]}")
-                self.output(f"  Failed: {len(failed_teams)}")
-                if failed_teams:
-                    for team_id_key, error_msg in failed_teams:
-                        self.output(f"    Team {team_id_key}: {error_msg}")
-                self.output(f"{'='*60}\n")
-
-                if not successful_teams:
-                    raise ProcessorError("All team uploads failed")
-
-                # Update display_name for all successful teams
-                if display_name and display_name.strip():
-                    self.output(f"Updating display_name for {len(successful_teams)} successful team(s)...")
-                    for team_id_key, result in successful_teams:
-                        software_package = result.get("software_package", {})
-                        title_id = software_package.get("title_id")
-                        if title_id:
-                            try:
-                                self.output(f"  [Team {team_id_key}] Updating display_name for title ID {title_id}...")
-                                self._fleet_update_display_name(
-                                    fleet_api_base,
-                                    fleet_token,
-                                    title_id,
-                                    team_id_key,
-                                    display_name,
-                                )
-                                self.output(f"  [Team {team_id_key}] ✅ Display name updated successfully")
-                            except Exception as e:
-                                self.output(
-                                    f"  [Team {team_id_key}] ⚠️  Warning: Failed to update display name: {e}"
-                                )
-                        else:
-                            self.output(f"  [Team {team_id_key}] ⚠️  Warning: No title_id in upload response, skipping display_name update")
-
-                # Use first successful upload for output variables
-                upload_info = successful_teams[0][1]
-                successful_team_id = successful_teams[0][0]
-                self.output(f"Using upload result from team {successful_team_id} for output variables")
-
-                # Update team_id to the successful upload's team for subsequent queries
-                team_id = successful_team_id
-            else:
-                # Single team upload (legacy path)
-                self.output("Uploading package to Fleet...")
-                upload_info = self._fleet_upload_package(
-                    fleet_api_base,
-                    fleet_token,
-                    pkg_path,
-                    software_title,
-                    version,
-                    team_id,
-                    self_service,
-                    automatic_install,
-                    labels_include_any,
-                    labels_exclude_any,
-                    install_script,
-                    uninstall_script,
-                    pre_install_query,
-                    post_install_script,
-                    categories,
-                    display_name,
-                )
+            self.output(f"✅ Package uploaded successfully (title_id: {title_id}, hash: {hash_sha256[:16]}...)")
 
         if upload_info is None:
             raise ProcessorError("Fleet package upload failed; no data returned")
