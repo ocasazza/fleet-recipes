@@ -1402,7 +1402,21 @@ class FleetImporter(Processor):
                 failed_teams = []
                 for team_id_key, result in upload_results.items():
                     if result and "error" not in result:
-                        successful_teams.append((team_id_key, result))
+                        # Validate that upload response has required fields
+                        software_package = result.get("software_package", {})
+                        title_id = software_package.get("title_id")
+                        hash_sha256 = software_package.get("hash_sha256")
+
+                        if title_id and hash_sha256:
+                            successful_teams.append((team_id_key, result))
+                        else:
+                            missing_fields = []
+                            if not title_id:
+                                missing_fields.append("title_id")
+                            if not hash_sha256:
+                                missing_fields.append("hash_sha256")
+                            error_msg = f"Upload response missing required fields: {', '.join(missing_fields)}"
+                            failed_teams.append((team_id_key, error_msg))
                     else:
                         error_msg = result.get("error", "Unknown error") if result else "No response"
                         failed_teams.append((team_id_key, error_msg))
