@@ -370,17 +370,20 @@ class FleetImporter(Processor):
         raise ProcessorError(f"Request failed after {max_retries} retries: {last_error}")
 
     def _discover_teams_for_package(
-        self, software_name: str, teams_dir: str = None
+        self, software_name: str, teams_dir: str = None, fleet_api_base: str = None, fleet_token: str = None
     ) -> list[dict]:
         """
         Discover which teams reference a software package in their YAML files.
 
         Scans team YAML files to find all teams that include the specified
-        software package in their configuration.
+        software package in their configuration. Team IDs are looked up from
+        Fleet API using team names.
 
         Args:
             software_name: Name of the software package (e.g., "sentinelone")
             teams_dir: Path to teams directory (defaults to ./teams in repo root)
+            fleet_api_base: Fleet API base URL (for looking up team IDs)
+            fleet_token: Fleet API token (for looking up team IDs)
 
         Returns:
             List of dicts with team info: [{"file": "it-ops-general.yml", "team_id": 26, "name": "IT Ops General"}, ...]
@@ -411,10 +414,30 @@ class FleetImporter(Processor):
             self.output(f"Warning: Teams directory does not exist: {teams_dir}")
             return []
 
+        # Fetch team ID mapping from Fleet API if credentials provided
+        team_name_to_id = {}
+        if fleet_api_base and fleet_token:
+            try:
+                url = f"{fleet_api_base}/api/v1/fleet/teams"
+                headers = {
+                    "Authorization": f"Bearer {fleet_token}",
+                    "Accept": "application/json",
+                }
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, timeout=30, context=self._get_ssl_context()) as resp:
+                    if resp.getcode() == 200:
+                        data = json.loads(resp.read().decode())
+                        teams = data.get("teams", [])
+                        team_name_to_id = {t["name"]: t["id"] for t in teams}
+                        self.output(f"Fetched {len(team_name_to_id)} teams from Fleet API for ID lookup")
+            except Exception as e:
+                self.output(f"Warning: Could not fetch teams from Fleet API: {e}. Team IDs will be null.")
+
         teams_with_package = []
 
         # Scan all YAML files in teams directory
         yaml_files = list(teams_dir.glob("*.yml")) + list(teams_dir.glob("*.yaml"))
+        self.output(f"Scanning {len(yaml_files)} team YAML files in {teams_dir}...")
         for yaml_file in yaml_files:
             try:
                 with open(yaml_file, 'r') as f:
@@ -424,26 +447,60 @@ class FleetImporter(Processor):
                     continue
 
                 # Check if this team has a software section
-                software_list = team_data.get('software', [])
+                # Software can be at root level or under software.packages
+                software_section = team_data.get('software')
+                if not software_section:
+                    # No software section at all
+                    continue
+
+                if isinstance(software_section, list):
+                    # Backward compatibility: software as list
+                    software_list = software_section
+                    self.output(f"  [{yaml_file.name}] Found software list (legacy format) with {len(software_list)} items")
+                elif isinstance(software_section, dict):
+                    # New format: software.packages subsection
+                    software_list = software_section.get('packages', [])
+                    if software_list:
+                        self.output(f"  [{yaml_file.name}] Found software.packages with {len(software_list)} items")
+                else:
+                    continue
+
                 if not software_list:
                     continue
 
                 # Check if our software package is in the list
-                for software_item in software_list:
-                    # Software items can be strings or dicts
+                for idx, software_item in enumerate(software_list):
+                    # Software items can be strings, dicts with 'name', or dicts with 'path'
                     if isinstance(software_item, str):
                         sw_name = software_item
                     elif isinstance(software_item, dict):
+                        # Try 'name' field first
                         sw_name = software_item.get('name', '')
+                        # If no 'name', extract from 'path' field
+                        if not sw_name and 'path' in software_item:
+                            # Extract filename from path: ../lib/software/homebrew/macos/homebrew.yml -> homebrew
+                            path = software_item['path']
+                            sw_name = Path(path).stem  # Gets filename without extension
+                            if idx == 0:  # Only log first item to avoid spam
+                                self.output(f"  [{yaml_file.name}] Extracted '{sw_name}' from path: {path}")
                     else:
                         continue
 
-                    if sw_name == software_name:
+                    # Match software name (handle per-team files like "homebrew-it-ops-build-machines")
+                    # Check exact match OR if sw_name starts with software_name followed by hyphen
+                    is_match = (sw_name == software_name or
+                               sw_name.startswith(f"{software_name}-"))
+
+                    if is_match:
                         # Found a match! Extract team info
+                        team_name = team_data.get('name', yaml_file.stem)
+                        team_id = team_name_to_id.get(team_name)  # Lookup from Fleet API
+
                         team_info = {
                             "file": yaml_file.name,
-                            "team_id": team_data.get('team_id'),
-                            "name": team_data.get('name', yaml_file.stem),
+                            "file_stem": yaml_file.stem,  # e.g., "it-ops-build-machines"
+                            "team_id": team_id,
+                            "name": team_name,
                         }
                         teams_with_package.append(team_info)
                         self.output(
@@ -988,14 +1045,31 @@ class FleetImporter(Processor):
         target_team_ids = []
 
         if discover_teams:
+            # Extract software name from YAML filename for team discovery
+            # Teams reference packages by YAML filename (e.g., "homebrew" from "homebrew.yml")
+            # NOT by software_title (which includes version and git hash)
+            if gitops_software_filename:
+                software_name = gitops_software_filename.replace('.yml', '').replace('.yaml', '')
+            else:
+                # Fallback: try to guess from software_title (remove version/hash patterns)
+                software_name = software_title.split()[0].lower()
+
             # Auto-discover teams from YAML files
-            self.output(f"Team discovery enabled. Scanning for teams that reference '{software_title}'...")
-            discovered_teams = self._discover_teams_for_package(software_title, teams_dir)
+            self.output(f"Team discovery enabled. Scanning for teams that reference package '{software_name}'...")
+            discovered_teams = self._discover_teams_for_package(
+                software_name,
+                teams_dir,
+                fleet_api_base=fleet_api_base,
+                fleet_token=fleet_token
+            )
             target_team_ids = [t["team_id"] for t in discovered_teams if t["team_id"] is not None]
+
+            # Store discovered teams info for later use (e.g., generating per-team YAML filenames)
+            self.env["_discovered_teams"] = discovered_teams
 
             if not target_team_ids:
                 self.output(
-                    f"Warning: Team discovery found no teams for '{software_title}'. "
+                    f"Warning: Team discovery found no teams for '{software_name}'. "
                     f"Falling back to team_id or team_ids if provided."
                 )
 
@@ -1309,87 +1383,53 @@ class FleetImporter(Processor):
                 team_id,
             )
         else:
-            # Regular software package upload
+            # Regular software package upload - upload to each team independently
+            # (Fleet assigns different hashes per team, so teams cannot share packages)
             if len(target_team_ids) > 1:
-                # Multi-team upload with parallel execution
-                self.output(f"Uploading package to {len(target_team_ids)} teams in parallel...")
-                upload_results = self._upload_package_to_teams(
-                    base_url=fleet_api_base,
-                    token=fleet_token,
-                    pkg_path=pkg_path,
-                    software_title=software_title,
-                    version=version,
-                    team_ids=target_team_ids,
-                    self_service=self_service,
-                    automatic_install=automatic_install,
-                    labels_include_any=labels_include_any,
-                    labels_exclude_any=labels_exclude_any,
-                    install_script=install_script,
-                    uninstall_script=uninstall_script,
-                    pre_install_query=pre_install_query,
-                    post_install_script=post_install_script,
-                    categories=categories,
-                    display_name=display_name,
+                self.output(
+                    f"Uploading package to {len(target_team_ids)} team(s): {target_team_ids}"
+                )
+                # Multi-team parallel upload
+                team_results = self._upload_package_to_teams(
+                    fleet_api_base,
+                    fleet_token,
+                    pkg_path,
+                    software_title,
+                    version,
+                    target_team_ids,
+                    self_service,
+                    automatic_install,
+                    labels_include_any,
+                    labels_exclude_any,
+                    install_script,
+                    uninstall_script,
+                    pre_install_query,
+                    post_install_script,
+                    categories,
+                    display_name,
                 )
 
-                # Summarize upload results
-                successful_teams = []
-                failed_teams = []
-                for team_id_key, result in upload_results.items():
-                    if result and "error" not in result:
-                        successful_teams.append((team_id_key, result))
-                    else:
-                        error_msg = result.get("error", "Unknown error") if result else "No response"
-                        failed_teams.append((team_id_key, error_msg))
-
-                # Log summary
-                self.output(f"\n{'='*60}")
-                self.output(f"Multi-team upload summary:")
-                self.output(f"  Total teams: {len(upload_results)}")
-                self.output(f"  Successful: {len(successful_teams)} - Team IDs: {[t[0] for t in successful_teams]}")
-                self.output(f"  Failed: {len(failed_teams)}")
+                # Verify all teams succeeded
+                failed_teams = [
+                    team_id for team_id, result in team_results.items()
+                    if "error" in result
+                ]
                 if failed_teams:
-                    for team_id_key, error_msg in failed_teams:
-                        self.output(f"    Team {team_id_key}: {error_msg}")
-                self.output(f"{'='*60}\n")
+                    raise ProcessorError(
+                        f"Upload failed for team(s): {failed_teams}"
+                    )
 
-                if not successful_teams:
-                    raise ProcessorError("All team uploads failed")
+                # Store team results for later YAML writing
+                self.env["_team_upload_results"] = team_results
 
-                # Update display_name for all successful teams
-                if display_name and display_name.strip():
-                    self.output(f"Updating display_name for {len(successful_teams)} successful team(s)...")
-                    for team_id_key, result in successful_teams:
-                        software_package = result.get("software_package", {})
-                        title_id = software_package.get("title_id")
-                        if title_id:
-                            try:
-                                self.output(f"  [Team {team_id_key}] Updating display_name for title ID {title_id}...")
-                                self._fleet_update_display_name(
-                                    fleet_api_base,
-                                    fleet_token,
-                                    title_id,
-                                    team_id_key,
-                                    display_name,
-                                )
-                                self.output(f"  [Team {team_id_key}] ✅ Display name updated successfully")
-                            except Exception as e:
-                                self.output(
-                                    f"  [Team {team_id_key}] ⚠️  Warning: Failed to update display name: {e}"
-                                )
-                        else:
-                            self.output(f"  [Team {team_id_key}] ⚠️  Warning: No title_id in upload response, skipping display_name update")
-
-                # Use first successful upload for output variables
-                upload_info = successful_teams[0][1]
-                successful_team_id = successful_teams[0][0]
-                self.output(f"Using upload result from team {successful_team_id} for output variables")
-
-                # Update team_id to the successful upload's team for subsequent queries
-                team_id = successful_team_id
+                # Use first team's results for compatibility with single-team code path
+                first_team_id = target_team_ids[0]
+                upload_info = team_results[first_team_id]
+                self.output(f"✅ Package uploaded successfully to all {len(target_team_ids)} team(s)")
             else:
-                # Single team upload (legacy path)
-                self.output("Uploading package to Fleet...")
+                # Single team upload
+                team_id = target_team_ids[0] if target_team_ids else team_id
+                self.output(f"Uploading package to team {team_id}...")
                 upload_info = self._fleet_upload_package(
                     fleet_api_base,
                     fleet_token,
@@ -1408,6 +1448,18 @@ class FleetImporter(Processor):
                     categories,
                     display_name,
                 )
+
+                # Store single-team result
+                software_package = upload_info.get("software_package", {})
+                title_id = software_package.get("title_id")
+                hash_sha256 = software_package.get("hash_sha256")
+
+                if not title_id or not hash_sha256:
+                    raise ProcessorError(
+                        f"Upload to team {team_id} failed: missing title_id or hash_sha256 in response"
+                    )
+
+                self.output(f"✅ Package uploaded successfully (title_id: {title_id}, hash: {hash_sha256[:16]}...)")
 
         if upload_info is None:
             raise ProcessorError("Fleet package upload failed; no data returned")
@@ -1466,36 +1518,102 @@ class FleetImporter(Processor):
         else:
             self.output("WARNING: No hash available - YAML file will NOT be updated")
 
-        # Update local software YAML file if GitOps parameters are provided
-        if gitops_software_dir and gitops_software_subpath and gitops_software_filename and hash_sha256:
-            yaml_file_path = Path(gitops_software_dir) / gitops_software_subpath / gitops_software_filename
+        # Update local software YAML file(s) if GitOps parameters are provided
+        if gitops_software_dir and gitops_software_subpath and gitops_software_filename:
+            # Check if we have multi-team upload results
+            team_results = self.env.get("_team_upload_results")
 
-            if not yaml_file_path.is_absolute():
-                yaml_file_path = yaml_file_path.resolve()
+            if team_results:
+                # Multi-team upload: create per-team YAML files
+                self.output(f"Creating per-team YAML files for {len(team_results)} team(s)...")
 
-            self.output(f"Updating local software YAML: {yaml_file_path}")
-            self.output(f"DEBUG: Writing hash to YAML: {hash_sha256}")
+                base_filename = gitops_software_filename.replace('.yml', '')
 
-            # Update or create the YAML file with hash only
-            # Do NOT include Fleet API URLs - they're internal/temporary and break when packages are deleted
-            self._update_local_software_yaml(
-                yaml_file_path,
-                hash_sha256,
-                version,
-                package_url=None,  # No URL in Fleet API mode
-                display_name=display_name,
-                software_title=software_title,
-                platform=platform,
-            )
+                # Get discovered teams info for team name lookup
+                discovered_teams = self.env.get("_discovered_teams", [])
+                team_id_to_info = {t["team_id"]: t for t in discovered_teams if t.get("team_id")}
 
-            # Update any policy files that install this software with the new hash
-            self.output(f"Checking for policies that install {software_title}...")
-            software_name = gitops_software_filename.replace('.yml', '')
-            self._update_policy_hashes(
-                gitops_software_dir,
-                software_name,
-                hash_sha256,
-            )
+                for team_id, result in team_results.items():
+                    software_package = result.get("software_package", {})
+                    team_hash = software_package.get("hash_sha256")
+
+                    if not team_hash:
+                        self.output(f"Warning: No hash for team {team_id}, skipping YAML")
+                        continue
+
+                    # Get team name from discovered teams info
+                    team_info = team_id_to_info.get(team_id, {})
+                    team_file_stem = team_info.get("file_stem", f"team-{team_id}")
+
+                    # Create team-specific filename: e.g., homebrew-it-ops-build-machines.yml
+                    team_yaml_filename = f"{base_filename}-{team_file_stem}.yml"
+                    yaml_file_path = Path(gitops_software_dir) / gitops_software_subpath / team_yaml_filename
+
+                    # Base YAML path (template to copy from)
+                    base_yaml_path = Path(gitops_software_dir) / gitops_software_subpath / gitops_software_filename
+
+                    if not yaml_file_path.is_absolute():
+                        yaml_file_path = yaml_file_path.resolve()
+                    if not base_yaml_path.is_absolute():
+                        base_yaml_path = base_yaml_path.resolve()
+
+                    self.output(f"[Team {team_id}] Updating YAML: {yaml_file_path}")
+                    self.output(f"[Team {team_id}] Hash: {team_hash[:16]}...")
+
+                    # Update or create the YAML file with hash and team_id
+                    self._update_local_software_yaml(
+                        yaml_file_path,
+                        team_hash,
+                        version,
+                        package_url=None,  # No URL in Fleet API mode
+                        display_name=display_name,
+                        software_title=software_title,
+                        platform=platform,
+                        team_id=team_id,  # NEW: Add team_id field
+                        base_yaml_path=base_yaml_path,  # Copy from base YAML
+                    )
+
+                # Create per-team policy files with team-specific hashes
+                self.output("Creating per-team policy files with team-specific hashes...")
+                self._create_per_team_policies(
+                    gitops_software_dir,
+                    base_filename,
+                    team_results,
+                    discovered_teams,
+                )
+
+            elif hash_sha256:
+                # Single-team upload: create single YAML file
+                yaml_file_path = Path(gitops_software_dir) / gitops_software_subpath / gitops_software_filename
+
+                if not yaml_file_path.is_absolute():
+                    yaml_file_path = yaml_file_path.resolve()
+
+                self.output(f"Updating local software YAML: {yaml_file_path}")
+                self.output(f"DEBUG: Writing hash to YAML: {hash_sha256}")
+
+                # Update or create the YAML file with hash only
+                # Do NOT include Fleet API URLs - they're internal/temporary and break when packages are deleted
+                self._update_local_software_yaml(
+                    yaml_file_path,
+                    hash_sha256,
+                    version,
+                    package_url=None,  # No URL in Fleet API mode
+                    display_name=display_name,
+                    software_title=software_title,
+                    platform=platform,
+                )
+
+                # Update any policy files that install this software with the new hash
+                self.output(f"Checking for policies that install {software_title}...")
+                software_name = gitops_software_filename.replace('.yml', '')
+                self._update_policy_hashes(
+                    gitops_software_dir,
+                    software_name,
+                    hash_sha256,
+                )
+            else:
+                self.output("WARNING: No hash available - YAML file will NOT be updated")
 
         # Upload icon if provided
         icon_path_str = self.env.get("icon", "").strip()
@@ -2020,6 +2138,8 @@ class FleetImporter(Processor):
         display_name: str = "",
         software_title: str = "",
         platform: str = "",
+        team_id: int = None,
+        base_yaml_path: Path = None,
     ):
         """Update local software.yml file with package hash and version.
 
@@ -2031,6 +2151,8 @@ class FleetImporter(Processor):
             display_name: Optional display name for Fleet UI
             software_title: Software title (name field, required for new files)
             platform: Platform (darwin/linux, required for new files)
+            team_id: Team ID this package belongs to (optional, for per-team files)
+            base_yaml_path: Path to base YAML file to copy from (for per-team files)
 
         Raises:
             ProcessorError: If YAML file cannot be read or written
@@ -2052,6 +2174,16 @@ class FleetImporter(Processor):
                     data = yaml.safe_load(f) or {}
             except Exception as e:
                 raise ProcessorError(f"Failed to read YAML file {yaml_file_path}: {e}")
+        elif base_yaml_path and base_yaml_path.exists():
+            # Creating new per-team file - copy from base template
+            self.output(f"Creating new per-team YAML file from base: {base_yaml_path}")
+            try:
+                with open(base_yaml_path, 'r') as f:
+                    data = yaml.safe_load(f) or {}
+                # Create parent directory if it doesn't exist
+                yaml_file_path.parent.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                raise ProcessorError(f"Failed to read base YAML file {base_yaml_path}: {e}")
         else:
             self.output(f"Creating new YAML file: {yaml_file_path}")
             # Create parent directory if it doesn't exist
@@ -2065,10 +2197,17 @@ class FleetImporter(Processor):
         data['version'] = version
 
         # Write name and platform for new files (required by Fleet GitOps)
+        # Note: 'name' should be the short software name (e.g., "homebrew"), not the full title
         if software_title and 'name' not in data:
+            # Use short name from filename if available, otherwise use software_title
+            # For per-team files, the base template should already have the correct name
             data['name'] = software_title
         if platform and 'platform' not in data:
             data['platform'] = platform
+
+        # Add team_id if provided (for per-team YAML files)
+        if team_id is not None:
+            data['team_id'] = team_id
 
         # Add display_name if provided
         if display_name:
@@ -2254,6 +2393,120 @@ class FleetImporter(Processor):
 
         if total_updated == 0 and total_scanned > 0:
             self.output(f"ℹ️  No policies needed updating (this is normal if no policies install {software_name})")
+
+    def _create_per_team_policies(
+        self,
+        gitops_software_dir: str,
+        software_name: str,
+        team_results: dict,
+        discovered_teams: list,
+    ):
+        """Create per-team policy files with team-specific software hashes.
+
+        Args:
+            gitops_software_dir: Base GitOps directory path
+            software_name: Name of the software package (e.g., "homebrew")
+            team_results: Dict mapping team_id to upload results with hashes
+            discovered_teams: List of discovered team info dicts
+
+        Raises:
+            ProcessorError: If policy files cannot be created
+        """
+        try:
+            import yaml
+        except ImportError:
+            self.output("Warning: PyYAML not available, skipping per-team policy creation")
+            return
+
+        # Navigate to policies directory
+        software_path = Path(gitops_software_dir)
+        if not software_path.is_absolute():
+            software_path = software_path.resolve()
+
+        repo_root = software_path.parent.parent
+        policies_base_dir = repo_root / "lib" / "policies"
+
+        if not policies_base_dir.exists():
+            self.output(f"Policies directory not found: {policies_base_dir}, skipping per-team policy creation")
+            return
+
+        # Normalize software name for matching
+        normalized_name = software_name.lower().replace('-pkg', '').replace('_', '').replace('-', '')
+
+        # Build team ID to info mapping
+        team_id_to_info = {t["team_id"]: t for t in discovered_teams if t.get("team_id")}
+
+        # Search all platform subdirectories
+        platform_dirs = [d for d in policies_base_dir.iterdir() if d.is_dir()]
+
+        total_created = 0
+
+        for platform_dir in platform_dirs:
+            policy_files = list(platform_dir.glob("*.yml"))
+
+            for policy_file in policy_files:
+                # Skip per-team policy files (they have team names in filename)
+                if any(f"-{t.get('file_stem', '')}" in policy_file.stem for t in discovered_teams if t.get('file_stem')):
+                    continue
+
+                try:
+                    with open(policy_file, 'r') as f:
+                        policy_data = yaml.safe_load(f)
+
+                    if not policy_data:
+                        continue
+
+                    # Handle both single policy and list of policies
+                    policies = policy_data if isinstance(policy_data, list) else [policy_data]
+
+                    for policy in policies:
+                        install_software = policy.get('install_software')
+                        if not install_software or 'hash_sha256' not in install_software:
+                            continue
+
+                        # Check if policy name matches software (fuzzy match)
+                        policy_name = policy.get('name', '').lower()
+                        policy_normalized = policy_name.replace(' ', '').replace('-', '').replace('_', '')
+
+                        if normalized_name not in policy_normalized:
+                            continue
+
+                        # Found a matching policy - create per-team versions
+                        self.output(f"  Creating per-team versions of: {policy_file.name}")
+
+                        for team_id, result in team_results.items():
+                            software_package = result.get("software_package", {})
+                            team_hash = software_package.get("hash_sha256")
+
+                            if not team_hash:
+                                continue
+
+                            # Get team name
+                            team_info = team_id_to_info.get(team_id, {})
+                            team_file_stem = team_info.get("file_stem", f"team-{team_id}")
+
+                            # Create per-team policy filename
+                            base_policy_name = policy_file.stem
+                            per_team_filename = f"{base_policy_name}-{team_file_stem}.yml"
+                            per_team_path = platform_dir / per_team_filename
+
+                            # Copy policy data and update hash
+                            per_team_policy = policy.copy()
+                            per_team_policy['install_software'] = {'hash_sha256': team_hash}
+
+                            # Write per-team policy file
+                            per_team_data = [per_team_policy] if isinstance(policy_data, list) else per_team_policy
+                            with open(per_team_path, 'w') as f:
+                                yaml.safe_dump(per_team_data, f, default_flow_style=False, sort_keys=False)
+
+                            self.output(f"    ✅ Created {per_team_filename} (team {team_id}, hash: {team_hash[:16]}...)")
+                            total_created += 1
+
+                except Exception as e:
+                    self.output(f"  ⚠️  Failed to process {policy_file.name}: {e}")
+                    continue
+
+        self.output(f"Per-team policy summary: created {total_created} policy files")
 
     def _slugify(self, text: str) -> str:
         """Convert text to a URL-safe slug.
@@ -3855,6 +4108,76 @@ This PR was automatically generated by the FleetImporter AutoPkg processor.
         # Default to minimum supported version if query fails (assume modern Fleet deployment)
         return FLEET_MINIMUM_VERSION
 
+    def _fleet_find_package_by_hash(
+        self,
+        base_url: str,
+        token: str,
+        software_title: str,
+        version: str,
+        hash_sha256: str,
+        team_id: int,
+    ) -> dict:
+        """Find a software package in Fleet by its hash.
+
+        This is used as a fallback when upload succeeds but response doesn't include title_id
+        (which happens when the package already exists in Fleet).
+
+        Args:
+            base_url: Fleet API base URL
+            token: Fleet API token
+            software_title: Name of the software package
+            version: Version string
+            hash_sha256: SHA256 hash of the package
+            team_id: Team ID to search in
+
+        Returns:
+            dict with title_id, name, version, hash if found, None otherwise
+        """
+        try:
+            # Query software titles for this team
+            url = f"{base_url}/api/v1/fleet/software/titles?team_id={team_id}"
+            headers = {"Authorization": f"Bearer {token}"}
+
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(
+                req,
+                timeout=FLEET_UPLOAD_TIMEOUT,
+                context=self._get_ssl_context(),
+            ) as response:
+                if response.getcode() == 200:
+                    data = json.loads(response.read().decode())
+                    titles = data.get("software_titles", [])
+
+                    # Search by hash only (name/version might differ in Fleet's storage)
+                    for title in titles:
+                        software_package = title.get("software_package")
+                        if software_package:
+                            pkg_hash = software_package.get("sha256")
+                            # Debug: show first package structure
+                            if titles.index(title) == 0:
+                                self.output(f"  DEBUG: First title has software_package: {software_package}")
+                                self.output(f"  DEBUG: Looking for hash: {hash_sha256}")
+
+                            if pkg_hash == hash_sha256:
+                                self.output(f"  Found package by hash: {title.get('name')} {title.get('version')} (title_id: {title.get('id')})")
+                                return {
+                                    "title_id": title.get("id"),
+                                    "name": title.get("name"),
+                                    "version": title.get("version"),
+                                    "hash": software_package.get("sha256"),
+                                }
+
+                    # Not found - log for debugging
+                    self.output(f"Package with hash {hash_sha256[:16]}... not found in {len(titles)} titles")
+                    return None
+                else:
+                    self.output(f"Failed to query software titles: HTTP {response.getcode()}")
+                    return None
+
+        except Exception as e:
+            self.output(f"Error querying Fleet for package by hash: {e}")
+            return None
+
     def _fleet_delete_package(
         self,
         base_url: str,
@@ -3867,15 +4190,21 @@ This PR was automatically generated by the FleetImporter AutoPkg processor.
         Args:
             base_url: Fleet API base URL
             token: Fleet API token
-            software_title: Name of the software to delete
+            software_title: Name of the software to delete (may include version and git ref)
             team_id: Team ID
 
         Returns:
             True if deleted successfully, False if not found or error
         """
         try:
+            # Extract base name by removing version and git ref patterns
+            # Examples: "Homebrew 1.0.0 ref: b1356bd" -> "Homebrew"
+            #           "AppGate SDP 0.0.0 ref: ff87e3e" -> "AppGate SDP"
+            import re
+            base_name = re.sub(r'\s+\d+\.\d+.*$', '', software_title).strip()
+
             # First, find the software title ID by searching
-            query_param = urllib.parse.quote(software_title)
+            query_param = urllib.parse.quote(base_name)
             search_url = f"{base_url}/api/v1/fleet/software/titles?team_id={team_id}&query={query_param}"
             headers = {
                 "Authorization": f"Bearer {token}",
@@ -3890,15 +4219,18 @@ This PR was automatically generated by the FleetImporter AutoPkg processor.
                     data = json.loads(resp.read().decode())
                     software_titles = data.get("software_titles", [])
 
-                    # Find matching title
+                    # Find matching title by base name (fuzzy match)
                     title_id = None
                     for title in software_titles:
-                        if title.get("name", "").lower() == software_title.lower():
+                        title_name = title.get("name", "")
+                        # Match if title starts with base_name (handles "Homebrew", "Homebrew 1.0.0", etc.)
+                        if title_name.lower().startswith(base_name.lower()):
                             title_id = title.get("id")
+                            self.output(f"Found existing package '{title_name}' (title_id: {title_id}) for deletion")
                             break
 
                     if not title_id:
-                        self.output(f"Software title '{software_title}' not found, cannot delete")
+                        self.output(f"Software title matching '{base_name}' not found, cannot delete")
                         return False
 
                     # Now delete the package
@@ -3953,9 +4285,6 @@ This PR was automatically generated by the FleetImporter AutoPkg processor.
     ) -> dict:
         url = f"{base_url}/api/v1/fleet/software/package"
         self.output(f"Uploading file to Fleet: {pkg_path}")
-        self.output(f"DEBUG: Package path type: {type(pkg_path)}, exists: {pkg_path.exists() if isinstance(pkg_path, Path) else 'N/A'}")
-        self.output(f"DEBUG: Package filename: {pkg_path.name if isinstance(pkg_path, Path) else pkg_path}")
-        self.output(f"DEBUG: Team ID: {team_id}, Self-service: {self_service}")
         # API rules: only one of include/exclude
         if labels_include_any and labels_exclude_any:
             raise ProcessorError(
@@ -4021,11 +4350,82 @@ This PR was automatically generated by the FleetImporter AutoPkg processor.
                 status = resp.getcode()
         except urllib.error.HTTPError as e:
             if e.code == 409:
-                # Package already exists - try to delete and retry
-                self.output(
-                    f"Package already exists in Fleet (409 Conflict). Attempting to delete and retry..."
-                )
-                # Delete the old package
+                # Package already exists - parse the installer name from error response
+                error_body = e.read().decode()
+                self.output(f"Package already exists in Fleet (409 Conflict)")
+
+                # Parse the installer name from the error response
+                # Example: "SoftwareInstaller \"0-b1356bd\" already exists with team \"foo\"."
+                import re
+                installer_match = re.search(r'SoftwareInstaller \\"([^"]+)\\"', error_body)
+                if installer_match:
+                    installer_name = installer_match.group(1)
+                    self.output(f"Found existing installer '{installer_name}', querying Fleet...")
+
+                    # Query Fleet to find the software title for this installer
+                    try:
+                        query_param = urllib.parse.quote(installer_name)
+                        search_url = f"{base_url}/api/v1/fleet/software/titles?team_id={team_id}&query={query_param}&available_for_install=true"
+                        headers_search = {
+                            "Authorization": f"Bearer {token}",
+                            "Accept": "application/json",
+                        }
+                        req_search = urllib.request.Request(search_url, headers=headers_search)
+
+                        with urllib.request.urlopen(
+                            req_search, timeout=FLEET_VERSION_TIMEOUT, context=self._get_ssl_context()
+                        ) as resp_search:
+                            if resp_search.getcode() == 200:
+                                data = json.loads(resp_search.read().decode())
+                                software_titles = data.get("software_titles", [])
+
+                                # Find exact match by name
+                                for title in software_titles:
+                                    if title.get("name") == installer_name:
+                                        title_id = title.get("id")
+                                        self.output(f"Found existing package with title_id: {title_id}")
+
+                                        # Query detailed title info to verify package filename matches
+                                        try:
+                                            title_url = f"{base_url}/api/v1/fleet/software/titles/{title_id}?team_id={team_id}"
+                                            req_title = urllib.request.Request(title_url, headers=headers_search)
+
+                                            with urllib.request.urlopen(
+                                                req_title, timeout=FLEET_VERSION_TIMEOUT, context=self._get_ssl_context()
+                                            ) as resp_title:
+                                                if resp_title.getcode() == 200:
+                                                    title_data = json.loads(resp_title.read().decode())
+                                                    software_package = title_data.get("software_title", {}).get("software_package", {})
+                                                    package_name = software_package.get("name", "")
+
+                                                    # Verify package filename matches
+                                                    if package_name == pkg_path.name:
+                                                        self.output(f"✓ Package filename verified: {package_name}")
+                                                        # Return a response that looks like a successful upload
+                                                        return {
+                                                            "software_package": {
+                                                                "title_id": title_id,
+                                                                "hash_sha256": self._calculate_file_sha256(pkg_path),
+                                                                "version": version,
+                                                                "name": software_title,
+                                                            }
+                                                        }
+                                                    else:
+                                                        self.output(
+                                                            f"✗ Package filename mismatch - Expected: {pkg_path.name}, "
+                                                            f"Got: {package_name}. Skipping this title."
+                                                        )
+                                                        continue
+                                        except Exception as title_err:
+                                            self.output(f"Error verifying package filename: {title_err}")
+                                            continue
+
+                                self.output(f"Installer {installer_name} exists but could not find software title")
+                    except Exception as query_err:
+                        self.output(f"Error querying for existing installer: {query_err}")
+
+                # Fallback: try to delete and retry (old behavior)
+                self.output("Attempting to delete and retry...")
                 if self._fleet_delete_package(base_url, token, software_title, team_id):
                     # Retry upload after successful delete
                     self.output("Retrying upload after deletion...")
@@ -4118,8 +4518,6 @@ This PR was automatically generated by the FleetImporter AutoPkg processor.
             raise ProcessorError(f"Fleet upload failed: {status} {resp_body.decode()}")
 
         upload_response = json.loads(resp_body or b"{}")
-        self.output(f"DEBUG: Upload response keys: {list(upload_response.keys())}")
-        self.output(f"DEBUG: Upload response: {json.dumps(upload_response, indent=2)[:500]}...")
         return upload_response
 
     def _fleet_upload_bootstrap(
