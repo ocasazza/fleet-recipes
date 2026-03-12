@@ -1425,30 +1425,34 @@ class FleetImporter(Processor):
         # Bootstrap packages return empty dict on success - handle specially
         if package_type == "bootstrap":
             self.output("Bootstrap package uploaded successfully")
-            return  # No further processing needed for bootstrap packages
-
-        # Extract upload results
-        software_package = upload_info.get("software_package", {})
-        title_id = software_package.get("title_id")
-        installer_id = software_package.get("installer_id")
-        hash_sha256 = software_package.get("hash_sha256")
-
-        # DEBUG: Log upload response structure
-        self.output(f"DEBUG: Upload response - software_package keys: {list(software_package.keys())}")
-        if hash_sha256:
-            self.output(f"DEBUG: Hash from upload response: {hash_sha256}")
+            # Bootstrap packages don't return hash info, so calculate it from the local file
+            hash_sha256 = self._calculate_file_sha256(pkg_path)
+            self.output(f"Calculated hash from local bootstrap package: {hash_sha256}")
+            self.env["hash_sha256"] = hash_sha256
+            # Continue to YAML update section (don't return early)
         else:
-            self.output("DEBUG: No hash in upload response")
+            # Extract upload results for software packages
+            software_package = upload_info.get("software_package", {})
+            title_id = software_package.get("title_id")
+            installer_id = software_package.get("installer_id")
+            hash_sha256 = software_package.get("hash_sha256")
 
-        # Set output variables
-        self.output(
-            f"Package uploaded successfully. Title ID: {title_id}, Installer ID: {installer_id}"
-        )
-        self.env["fleet_title_id"] = title_id
-        self.env["fleet_installer_id"] = installer_id
+            # DEBUG: Log upload response structure
+            self.output(f"DEBUG: Upload response - software_package keys: {list(software_package.keys())}")
+            if hash_sha256:
+                self.output(f"DEBUG: Hash from upload response: {hash_sha256}")
+            else:
+                self.output("DEBUG: No hash in upload response")
 
-        # If upload response doesn't include hash, query Fleet to get it
-        if not hash_sha256 and title_id:
+            # Set output variables
+            self.output(
+                f"Package uploaded successfully. Title ID: {title_id}, Installer ID: {installer_id}"
+            )
+            self.env["fleet_title_id"] = title_id
+            self.env["fleet_installer_id"] = installer_id
+
+            # If upload response doesn't include hash, query Fleet to get it
+            if not hash_sha256 and title_id:
             self.output(f"Hash not in upload response, querying Fleet for title {title_id}...")
             try:
                 title_url = f"{fleet_api_base}/api/v1/fleet/software/titles/{title_id}?team_id={team_id}"
@@ -1467,14 +1471,14 @@ class FleetImporter(Processor):
                             self.output(f"Retrieved hash from Fleet API: {hash_sha256}")
                         else:
                             self.output("Warning: Fleet API did not return package hash - package may not be attached to title")
-            except Exception as e:
-                self.output(f"Warning: Failed to query Fleet for hash: {e}")
+                except Exception as e:
+                    self.output(f"Warning: Failed to query Fleet for hash: {e}")
 
-        if hash_sha256:
-            self.env["hash_sha256"] = hash_sha256
-            self.output(f"DEBUG: Set hash_sha256 environment variable: {hash_sha256}")
-        else:
-            self.output("WARNING: No hash available - YAML file will NOT be updated")
+            if hash_sha256:
+                self.env["hash_sha256"] = hash_sha256
+                self.output(f"DEBUG: Set hash_sha256 environment variable: {hash_sha256}")
+            else:
+                self.output("WARNING: No hash available - YAML file will NOT be updated")
 
         # Update local software YAML file if GitOps parameters are provided
         if gitops_software_dir and gitops_software_subpath and gitops_software_filename and hash_sha256:
