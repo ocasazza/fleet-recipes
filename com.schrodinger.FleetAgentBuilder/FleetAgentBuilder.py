@@ -82,6 +82,7 @@ class FleetAgentBuilder(Processor):
                 f"--fleet-url={fleet_url}",
                 f"--enroll-secret={enroll_secret}",
                 f"--fleet-desktop",
+                "--enable-scripts",
                 "--disable-open-folder",
             ]
         else:
@@ -93,6 +94,7 @@ class FleetAgentBuilder(Processor):
                 f"--fleet-url={fleet_url}",
                 f"--enroll-secret={enroll_secret}",
                 f"--fleet-desktop",
+                "--enable-scripts",
                 "--disable-open-folder",
             ]
 
