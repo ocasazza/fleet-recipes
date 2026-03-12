@@ -48,6 +48,31 @@ class ProductBuildCreator(Processor):
             ),
             "default": False,
         },
+        "notarize": {
+            "required": False,
+            "description": "Enable notarization after signing",
+            "default": False,
+        },
+        "notarization_apple_id": {
+            "required": False,
+            "description": "Apple ID for notarization",
+            "default": "",
+        },
+        "notarization_team_id": {
+            "required": False,
+            "description": "Apple Developer Team ID",
+            "default": "",
+        },
+        "notarization_password": {
+            "required": False,
+            "description": "App-specific password for notarization (use @keychain: or @env: for security)",
+            "default": "",
+        },
+        "notarization_wait": {
+            "required": False,
+            "description": "Wait for notarization to complete (default: True)",
+            "default": True,
+        },
     }
     output_variables = {
         "pkg_path": {
@@ -76,6 +101,79 @@ class ProductBuildCreator(Processor):
             if e.stderr:
                 error_msg += f"\nError output:\n{e.stderr}"
             raise ProcessorError(error_msg)
+
+    def notarize_package(self, pkg_path, apple_id, team_id, password, wait=True):
+        """Submit package to Apple notary service"""
+        self.output(f"Submitting package for notarization...")
+
+        # Find notarytool - try xcrun first, then direct path
+        notarytool_cmd = None
+        try:
+            subprocess.run(["/usr/bin/xcrun", "--find", "notarytool"],
+                         check=True, capture_output=True)
+            notarytool_cmd = ["/usr/bin/xcrun", "notarytool"]
+        except subprocess.CalledProcessError:
+            # Fallback to direct path (Command Line Tools location)
+            direct_path = "/Library/Developer/CommandLineTools/usr/bin/notarytool"
+            if os.path.exists(direct_path):
+                notarytool_cmd = [direct_path]
+            else:
+                raise ProcessorError(
+                    "notarytool not found. Install Xcode Command Line Tools: xcode-select --install"
+                )
+
+        # Submit to notary service
+        submit_cmd = notarytool_cmd + [
+            "submit",
+            pkg_path,
+            "--apple-id", apple_id,
+            "--team-id", team_id,
+            "--password", password,
+        ]
+
+        if wait:
+            submit_cmd.append("--wait")
+
+        submit_output = self.run_command(submit_cmd, "notarytool submit")
+
+        # Extract submission ID from output
+        submission_id = None
+        for line in submit_output.splitlines():
+            if "id:" in line.lower():
+                submission_id = line.split(":")[-1].strip()
+                break
+
+        if not submission_id and wait:
+            raise ProcessorError("Failed to get notarization submission ID")
+
+        if submission_id:
+            self.output(f"Notarization submission ID: {submission_id}")
+
+        # Staple notarization ticket to package
+        if wait:
+            self.output("Stapling notarization ticket to package...")
+            # stapler is always available via xcrun, no fallback needed
+            stapler_cmd = [
+                "/usr/bin/xcrun",
+                "stapler",
+                "staple",
+                pkg_path,
+            ]
+            self.run_command(stapler_cmd, "stapler")
+            self.output("✓ Notarization ticket stapled")
+
+            # Verify notarization
+            self.output("Verifying notarization...")
+            stapler_validate_cmd = [
+                "/usr/bin/xcrun",
+                "stapler",
+                "validate",
+                pkg_path,
+            ]
+            self.run_command(stapler_validate_cmd, "stapler validate")
+            self.output("✓ Notarization verified")
+
+        return submission_id
 
     def main(self):
         distribution_xml = self.env["distribution_xml"]
@@ -143,6 +241,23 @@ class ProductBuildCreator(Processor):
                 os.remove(unsigned_pkg)
             except OSError as e:
                 self.output(f"Warning: Failed to remove unsigned package: {e}")
+
+        # Notarize if requested
+        if self.env.get("notarize", False):
+            apple_id = self.env.get("notarization_apple_id", "")
+            team_id = self.env.get("notarization_team_id", "")
+            password = self.env.get("notarization_password", "")
+            wait = self.env.get("notarization_wait", True)
+
+            if not signing_identity:
+                raise ProcessorError("Notarization requires a signed package (signing_identity must be set)")
+
+            if not apple_id or not team_id or not password:
+                raise ProcessorError(
+                    "Notarization requires: notarization_apple_id, notarization_team_id, and notarization_password"
+                )
+
+            self.notarize_package(output_pkg, apple_id, team_id, password, wait)
 
         # Verify package was created
         if not os.path.exists(output_pkg):
