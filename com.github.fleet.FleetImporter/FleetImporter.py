@@ -1453,24 +1453,24 @@ class FleetImporter(Processor):
 
             # If upload response doesn't include hash, query Fleet to get it
             if not hash_sha256 and title_id:
-            self.output(f"Hash not in upload response, querying Fleet for title {title_id}...")
-            try:
-                title_url = f"{fleet_api_base}/api/v1/fleet/software/titles/{title_id}?team_id={team_id}"
-                headers = {
-                    "Authorization": f"Bearer {fleet_token}",
-                    "Accept": "application/json",
-                }
-                req = urllib.request.Request(title_url, headers=headers)
-                with urllib.request.urlopen(req, timeout=30, context=self._get_ssl_context()) as resp:
-                    if resp.getcode() == 200:
-                        title_data = json.loads(resp.read().decode())
-                        package_data = title_data.get("software_title", {}).get("software_package", {})
-                        hash_sha256 = package_data.get("hash_sha256")
-                        self.output(f"DEBUG: Fleet title query - package_data: {package_data}")
-                        if hash_sha256:
-                            self.output(f"Retrieved hash from Fleet API: {hash_sha256}")
-                        else:
-                            self.output("Warning: Fleet API did not return package hash - package may not be attached to title")
+                self.output(f"Hash not in upload response, querying Fleet for title {title_id}...")
+                try:
+                    title_url = f"{fleet_api_base}/api/v1/fleet/software/titles/{title_id}?team_id={team_id}"
+                    headers = {
+                        "Authorization": f"Bearer {fleet_token}",
+                        "Accept": "application/json",
+                    }
+                    req = urllib.request.Request(title_url, headers=headers)
+                    with urllib.request.urlopen(req, timeout=30, context=self._get_ssl_context()) as resp:
+                        if resp.getcode() == 200:
+                            title_data = json.loads(resp.read().decode())
+                            package_data = title_data.get("software_title", {}).get("software_package", {})
+                            hash_sha256 = package_data.get("hash_sha256")
+                            self.output(f"DEBUG: Fleet title query - package_data: {package_data}")
+                            if hash_sha256:
+                                self.output(f"Retrieved hash from Fleet API: {hash_sha256}")
+                            else:
+                                self.output("Warning: Fleet API did not return package hash - package may not be attached to title")
                 except Exception as e:
                     self.output(f"Warning: Failed to query Fleet for hash: {e}")
 
