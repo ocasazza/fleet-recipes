@@ -1358,20 +1358,29 @@ class FleetImporter(Processor):
                 return
 
         # Upload to Fleet
+        # All packages (including bootstrap) are uploaded via software API to get software_title_id
+        # This allows them to be referenced by hash in team YAML files
         if package_type == "bootstrap":
-            # Bootstrap packages use different endpoint and don't support deployment options
-            # Bootstrap packages don't support multi-team upload yet
-            if len(target_team_ids) > 1:
-                self.output(
-                    f"Warning: Bootstrap packages only support single team upload. "
-                    f"Using first team: {target_team_ids[0]}"
-                )
-            self.output("Uploading bootstrap package to Fleet...")
-            upload_info = self._fleet_upload_bootstrap(
+            self.output("Uploading bootstrap package as software package (to get software_title_id)...")
+            # Upload to specific team
+            self.output(f"Uploading package to team {team_id}...")
+            upload_info = self._fleet_upload_package(
                 fleet_api_base,
                 fleet_token,
                 pkg_path,
+                software_title,
+                version,
                 team_id,
+                self_service,
+                automatic_install,
+                labels_include_any,
+                labels_exclude_any,
+                install_script,
+                uninstall_script,
+                pre_install_query,
+                post_install_script,
+                categories,
+                display_name,
             )
         else:
             # Regular software package upload - upload once to "No team" (team_id=0)
@@ -1422,63 +1431,54 @@ class FleetImporter(Processor):
         if upload_info is None:
             raise ProcessorError("Fleet package upload failed; no data returned")
 
-        # Bootstrap packages return empty dict on success - handle specially
-        if package_type == "bootstrap":
-            self.output("Bootstrap package uploaded successfully")
-            # Bootstrap packages don't return hash info, so calculate it from the local file
-            hash_sha256 = self._calculate_file_sha256(pkg_path)
-            self.output(f"Calculated hash from local bootstrap package: {hash_sha256}")
-            self.env["hash_sha256"] = hash_sha256
-            # Continue to YAML update section (don't return early)
+        # Extract upload results (same for both software and bootstrap packages now)
+        software_package = upload_info.get("software_package", {})
+        title_id = software_package.get("title_id")
+        installer_id = software_package.get("installer_id")
+        hash_sha256 = software_package.get("hash_sha256")
+
+        # DEBUG: Log upload response structure
+        self.output(f"DEBUG: Upload response - software_package keys: {list(software_package.keys())}")
+        if hash_sha256:
+            self.output(f"DEBUG: Hash from upload response: {hash_sha256}")
         else:
-            # Extract upload results for software packages
-            software_package = upload_info.get("software_package", {})
-            title_id = software_package.get("title_id")
-            installer_id = software_package.get("installer_id")
-            hash_sha256 = software_package.get("hash_sha256")
+            self.output("DEBUG: No hash in upload response")
 
-            # DEBUG: Log upload response structure
-            self.output(f"DEBUG: Upload response - software_package keys: {list(software_package.keys())}")
-            if hash_sha256:
-                self.output(f"DEBUG: Hash from upload response: {hash_sha256}")
-            else:
-                self.output("DEBUG: No hash in upload response")
+        # Set output variables
+        self.output(
+            f"Package uploaded successfully. Title ID: {title_id}, Installer ID: {installer_id}"
+        )
+        self.env["fleet_title_id"] = title_id
+        self.env["fleet_installer_id"] = installer_id
 
-            # Set output variables
-            self.output(
-                f"Package uploaded successfully. Title ID: {title_id}, Installer ID: {installer_id}"
-            )
-            self.env["fleet_title_id"] = title_id
-            self.env["fleet_installer_id"] = installer_id
+        # If upload response doesn't include hash, query Fleet to get it
+        if not hash_sha256 and title_id:
+            self.output(f"Hash not in upload response, querying Fleet for title {title_id}...")
+            try:
+                title_url = f"{fleet_api_base}/api/v1/fleet/software/titles/{title_id}?team_id={team_id}"
+                headers = {
+                    "Authorization": f"Bearer {fleet_token}",
+                    "Accept": "application/json",
+                }
+                req = urllib.request.Request(title_url, headers=headers)
+                with urllib.request.urlopen(req, timeout=30, context=self._get_ssl_context()) as resp:
+                    if resp.getcode() == 200:
+                        title_data = json.loads(resp.read().decode())
+                        package_data = title_data.get("software_title", {}).get("software_package", {})
+                        hash_sha256 = package_data.get("hash_sha256")
+                        self.output(f"DEBUG: Fleet title query - package_data: {package_data}")
+                        if hash_sha256:
+                            self.output(f"Retrieved hash from Fleet API: {hash_sha256}")
+                        else:
+                            self.output("Warning: Fleet API did not return package hash - package may not be attached to title")
+            except Exception as e:
+                self.output(f"Warning: Failed to query Fleet for hash: {e}")
 
-            # If upload response doesn't include hash, query Fleet to get it
-            if not hash_sha256 and title_id:
-                self.output(f"Hash not in upload response, querying Fleet for title {title_id}...")
-                try:
-                    title_url = f"{fleet_api_base}/api/v1/fleet/software/titles/{title_id}?team_id={team_id}"
-                    headers = {
-                        "Authorization": f"Bearer {fleet_token}",
-                        "Accept": "application/json",
-                    }
-                    req = urllib.request.Request(title_url, headers=headers)
-                    with urllib.request.urlopen(req, timeout=30, context=self._get_ssl_context()) as resp:
-                        if resp.getcode() == 200:
-                            title_data = json.loads(resp.read().decode())
-                            package_data = title_data.get("software_title", {}).get("software_package", {})
-                            hash_sha256 = package_data.get("hash_sha256")
-                            self.output(f"DEBUG: Fleet title query - package_data: {package_data}")
-                            if hash_sha256:
-                                self.output(f"Retrieved hash from Fleet API: {hash_sha256}")
-                            else:
-                                self.output("Warning: Fleet API did not return package hash - package may not be attached to title")
-                except Exception as e:
-                    self.output(f"Warning: Failed to query Fleet for hash: {e}")
-
-            if hash_sha256:
-                self.env["hash_sha256"] = hash_sha256
-                self.output(f"DEBUG: Set hash_sha256 environment variable: {hash_sha256}")
-            else:
-                self.output("WARNING: No hash available - YAML file will NOT be updated")
+        if hash_sha256:
+            self.env["hash_sha256"] = hash_sha256
+            self.output(f"DEBUG: Set hash_sha256 environment variable: {hash_sha256}")
+        else:
+            self.output("WARNING: No hash available - YAML file will NOT be updated")
 
         # Update local software YAML file if GitOps parameters are provided
         if gitops_software_dir and gitops_software_subpath and gitops_software_filename and hash_sha256:
