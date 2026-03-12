@@ -47,6 +47,26 @@ class FleetAgentBuilder(Processor):
             "description": "Code signing identity for macOS (e.g., 'Developer ID Installer: Company Name')",
             "default": "",
         },
+        "notarize": {
+            "required": False,
+            "description": "Enable notarization for macOS packages (default: false)",
+            "default": False,
+        },
+        "app_store_connect_api_key_id": {
+            "required": False,
+            "description": "App Store Connect API key ID for notarization",
+            "default": "",
+        },
+        "app_store_connect_api_key_issuer": {
+            "required": False,
+            "description": "Issuer of the App Store Connect API key",
+            "default": "",
+        },
+        "app_store_connect_api_key_content": {
+            "required": False,
+            "description": "Contents of the .p8 App Store Connect API key file",
+            "default": "",
+        },
     }
     output_variables = {
         "fleet_agent_pkg": {
@@ -61,6 +81,10 @@ class FleetAgentBuilder(Processor):
         output_path = self.env["output_path"]
         fleetctl_path = self.env.get("fleetctl_path", "fleetctl")
         sign_identity = self.env.get("sign_identity", "")
+        notarize = self.env.get("notarize", False)
+        api_key_id = self.env.get("app_store_connect_api_key_id", "")
+        api_key_issuer = self.env.get("app_store_connect_api_key_issuer", "")
+        api_key_content = self.env.get("app_store_connect_api_key_content", "")
 
         # Create output directory if needed
         output_dir = os.path.dirname(output_path)
@@ -102,6 +126,19 @@ class FleetAgentBuilder(Processor):
         if sign_identity:
             cmd.append(f"--sign-identity={sign_identity}")
             self.output(f"Signing with identity: {sign_identity}")
+
+        # Add notarization if requested
+        if notarize:
+            if not api_key_id or not api_key_issuer or not api_key_content:
+                raise ProcessorError(
+                    "Notarization requires: app_store_connect_api_key_id, "
+                    "app_store_connect_api_key_issuer, and app_store_connect_api_key_content"
+                )
+            cmd.append("--notarize")
+            cmd.append(f"--app-store-connect-api-key-id={api_key_id}")
+            cmd.append(f"--app-store-connect-api-key-issuer={api_key_issuer}")
+            cmd.append(f"--app-store-connect-api-key-content={api_key_content}")
+            self.output("Notarization enabled - package will be submitted to Apple")
 
         self.output(f"Running: {cmd[0]} {cmd[1] if cmd[0] == 'npx' else 'package'} --fleet-url=... --enroll-secret=***")
 
