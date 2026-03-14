@@ -1544,33 +1544,58 @@ class FleetImporter(Processor):
                     f"Warning: Icon file not found: {icon_path}. Skipping icon upload."
                 )
         elif title_id:
-            # No manual icon - try to extract from package automatically
-            self.output("Attempting to extract icon from package automatically...")
-            extracted_icon_path = self._extract_icon_from_pkg(pkg_path)
+            # No manual icon - try to auto-discover from software directory first
+            discovered_icon_path = None
+            if gitops_software_dir and gitops_software_subpath:
+                # Try to find icon in gitops_software_dir/gitops_software_subpath/icons/
+                icons_dir = Path(gitops_software_dir) / gitops_software_subpath / "icons"
+                if icons_dir.exists() and icons_dir.is_dir():
+                    # Look for common icon file formats
+                    for icon_pattern in ["*.png", "*.jpg", "*.jpeg"]:
+                        icon_files = list(icons_dir.glob(icon_pattern))
+                        if icon_files:
+                            # Use the first icon found
+                            discovered_icon_path = icon_files[0]
+                            self.output(f"Auto-discovered icon from software directory: {discovered_icon_path}")
+                            break
 
-            if extracted_icon_path and extracted_icon_path.exists():
-                self.output(f"Successfully extracted icon: {extracted_icon_path.name}")
-                try:
-                    self._fleet_upload_icon(
-                        fleet_api_base,
-                        fleet_token,
-                        title_id,
-                        team_id,
-                        extracted_icon_path,
-                    )
-                finally:
-                    # Clean up extracted icon temp directory
-                    if extracted_icon_path.parent.exists():
-                        try:
-                            shutil.rmtree(extracted_icon_path.parent)
-                        except Exception as e:
-                            self.output(
-                                f"Warning: Failed to cleanup icon temp dir: {e}"
-                            )
-            else:
-                self.output(
-                    "Could not extract icon from package. Skipping icon upload."
+            if discovered_icon_path and discovered_icon_path.exists():
+                # Use the discovered icon from software directory
+                self._fleet_upload_icon(
+                    fleet_api_base,
+                    fleet_token,
+                    title_id,
+                    team_id,
+                    discovered_icon_path,
                 )
+            else:
+                # No icon in software directory - try to extract from package automatically
+                self.output("Attempting to extract icon from package automatically...")
+                extracted_icon_path = self._extract_icon_from_pkg(pkg_path)
+
+                if extracted_icon_path and extracted_icon_path.exists():
+                    self.output(f"Successfully extracted icon: {extracted_icon_path.name}")
+                    try:
+                        self._fleet_upload_icon(
+                            fleet_api_base,
+                            fleet_token,
+                            title_id,
+                            team_id,
+                            extracted_icon_path,
+                        )
+                    finally:
+                        # Clean up extracted icon temp directory
+                        if extracted_icon_path.parent.exists():
+                            try:
+                                shutil.rmtree(extracted_icon_path.parent)
+                            except Exception as e:
+                                self.output(
+                                    f"Warning: Failed to cleanup icon temp dir: {e}"
+                                )
+                else:
+                    self.output(
+                        "Could not extract icon from package. Skipping icon upload."
+                    )
 
         # Update display name if provided and different from software_title
         if title_id and display_name:
