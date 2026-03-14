@@ -3,11 +3,11 @@
     "autopkg": {
       "flake": false,
       "locked": {
-        "lastModified": 1770149940,
-        "narHash": "sha256-Y5M53idCmVi4uPOaysdl/ZnS3JUdc5mUi5FTmkAuHBE=",
+        "lastModified": 1773368348,
+        "narHash": "sha256-gOKmvRAVXE5Jqf44eGOP+FxFyh77nkRwMHW7q5Xqe8Y=",
         "owner": "autopkg",
         "repo": "autopkg",
-        "rev": "4ac5cfb828117ecda41a19a20b294eab7189e47b",
+        "rev": "c34e6b3f20fd1ebb3aa69359099c79e8ebbe723b",
         "type": "github"
       },
       "original": {
@@ -18,11 +18,11 @@
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1771207753,
-        "narHash": "sha256-b9uG8yN50DRQ6A7JdZBfzq718ryYrlmGgqkRm9OOwCE=",
+        "lastModified": 1773476965,
+        "narHash": "sha256-Laaj25PvGeoP5SPhMfMGxvWqM6ZjZ6LdUeEhP6b3czY=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "d1c15b7d5806069da59e819999d70e1cec0760bf",
+        "rev": "f82ce7af0b79ac154b12e27ed800aeb97413723c",
         "type": "github"
       },
       "original": {
